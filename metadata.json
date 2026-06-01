@@ -1,0 +1,6 @@
+{
+  "name": "Life Dashboard",
+  "description": "A unified health and wellness dashboard featuring an AI wellness coach, Google Calendar integration, workouts tracker, hydration tracker, and weight logger.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

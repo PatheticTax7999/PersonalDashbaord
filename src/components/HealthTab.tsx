@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { UserState } from "../types";
+import { UserState, WaterConfig } from "../types";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, AreaChart, Area } from "recharts";
 import { motion, AnimatePresence } from "motion/react";
 
@@ -19,7 +19,7 @@ interface HealthTabProps {
   userState: UserState;
   onUpdateWaterGoal: (val: number) => void;
   onUpdateWaterUnit: (unit: string) => void;
-  onLogWater: (idx: number) => void;
+  onLogWater: (action: "increment" | "decrement") => void;
   onResetWater: () => void;
   onAddSupplement: (name: string, dosage: string, times: string[], scheduledTimes?: Record<string, string>) => void;
   onRemoveSupplement: (id: string) => void;
@@ -29,6 +29,7 @@ interface HealthTabProps {
   notifPermission: NotificationPermission;
   onRequestNotifPermission: () => Promise<void>;
   onTriggerTestNotification: () => void;
+  onUpdateWaterConfig?: (config: WaterConfig) => void;
 }
 
 export default function HealthTab({
@@ -44,7 +45,8 @@ export default function HealthTab({
   onRemoveWeight,
   notifPermission,
   onRequestNotifPermission,
-  onTriggerTestNotification
+  onTriggerTestNotification,
+  onUpdateWaterConfig
 }: HealthTabProps) {
   const [subTab, setSubTab] = useState<"hydration" | "weight">("hydration");
 
@@ -64,22 +66,222 @@ export default function HealthTab({
     night: "21:30"
   });
 
+  // AI Supplement state variables
+  const [aiModalOpen, setAiModalOpen] = useState(false);
+  const [aiGoal, setAiGoal] = useState("");
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiError, setAiError] = useState("");
+  const [aiRecs, setAiRecs] = useState<Array<{
+    name: string;
+    dosage: string;
+    times: string[];
+    reason: string;
+    selected?: boolean;
+  }>>([]);
+
+  const handleFetchAiRecommendations = async () => {
+    if (!aiGoal.trim()) return;
+    setAiLoading(true);
+    setAiError("");
+    setAiRecs([]);
+    try {
+      const res = await fetch("/api/generate-supplements", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ goal: aiGoal })
+      });
+      if (!res.ok) {
+        throw new Error("Service is temporarily busy. Please try again.");
+      }
+      const data = await res.json();
+      if (data.error) {
+        throw new Error(data.error);
+      }
+      if (data.supplements && Array.isArray(data.supplements)) {
+        setAiRecs(data.supplements.map((s: any) => ({ ...s, selected: true })));
+      } else {
+        throw new Error("Received malformed recommendation guidelines.");
+      }
+    } catch (err: any) {
+      setAiError(err.message || "Failed to generate recommendations.");
+    } finally {
+      setAiLoading(false);
+    }
+  };
+
+  const handleAddAiSupplements = () => {
+    const selected = aiRecs.filter(s => s.selected);
+    if (selected.length === 0) return;
+
+    selected.forEach(s => {
+      const finalScheduledTimes: Record<string, string> = {};
+      s.times.forEach(slotKey => {
+        finalScheduledTimes[slotKey] = slotKey === "morning" ? "08:00" :
+                                      slotKey === "afternoon" ? "13:00" :
+                                      slotKey === "evening" ? "18:00" :
+                                      "21:30";
+      });
+      onAddSupplement(s.name, s.dosage, s.times, finalScheduledTimes);
+    });
+
+    setAiGoal("");
+    setAiRecs([]);
+    setAiModalOpen(false);
+  };
+
   // Weight entry state
   const [weightInput, setWeightInput] = useState("");
 
+  // Water config setting states
+  const DEFAULT_WATER_CONFIG: WaterConfig = {
+    containerType: "glass",
+    capacity: 250,
+    capacityUnit: "ml",
+    creatineEnabled: false,
+    creatineAmount: 5,
+    stimulantsEnabled: false,
+    stimulantsAmount: 150,
+    height: 175,
+    weight: 75,
+    age: 28,
+    aiExplanation: "Proper hydration sustains metabolic speed, supports muscular protein synthesis during training, and coordinates electrolyte saturation for optimal nerve transmission.",
+    calculatedGoalMl: 2000
+  };
+
+  const [showWaterSettings, setShowWaterSettings] = useState(false);
+  const [height, setHeight] = useState("175");
+  const [weight, setWeight] = useState("75");
+  const [age, setAge] = useState("28");
+  const [containerType, setContainerType] = useState<"bottle" | "glass">("glass");
+  const [capacity, setCapacity] = useState("250");
+  const [capacityUnit, setCapacityUnit] = useState<"ml" | "lt" | "oz">("ml");
+  const [creatineEnabled, setCreatineEnabled] = useState(false);
+  const [creatineAmount, setCreatineAmount] = useState("5");
+  const [stimulantsEnabled, setStimulantsEnabled] = useState(false);
+  const [stimulantsAmount, setStimulantsAmount] = useState("150");
+  const [savingSettings, setSavingSettings] = useState(false);
+  const [settingsError, setSettingsError] = useState("");
+  const [showAnalysis, setShowAnalysis] = useState(false);
+
+  // Sync effect
   useEffect(() => {
-    if (userState.waterUnit === "ml" || userState.waterUnit === "oz") {
-      onUpdateWaterUnit("glass");
+    const config = userState.waterConfig || DEFAULT_WATER_CONFIG;
+    setHeight(config.height?.toString() || "175");
+    setWeight(config.weight?.toString() || "75");
+    setAge(config.age?.toString() || "28");
+    setContainerType(config.containerType || "glass");
+    setCapacity(config.capacity?.toString() || (config.containerType === "bottle" ? "1000" : "250"));
+    setCapacityUnit(config.capacityUnit || "ml");
+    setCreatineEnabled(!!config.creatineEnabled);
+    setCreatineAmount(config.creatineAmount?.toString() || "5");
+    setStimulantsEnabled(!!config.stimulantsEnabled);
+    setStimulantsAmount(config.stimulantsAmount?.toString() || "150");
+  }, [userState.waterConfig]);
+
+  const handleSaveWaterConfig = async () => {
+    setSavingSettings(true);
+    setSettingsError("");
+
+    const heightNum = parseFloat(height) || 175;
+    let weightNum = parseFloat(weight) || 75;
+    // If unit lb is used internally weight is converted is for raw formula
+    let formulaWeight = weightNum;
+    if (userState.useLb) {
+      formulaWeight = Math.round(weightNum * 0.453592 * 10) / 10;
     }
-  }, [userState.waterUnit, onUpdateWaterUnit]);
+    const ageNum = parseInt(age) || 28;
+    const capacityNum = parseFloat(capacity) || (containerType === "bottle" ? 1000 : 250);
+    const creatineAmtNum = parseFloat(creatineAmount) || 5;
+    const stimulantsAmtNum = parseFloat(stimulantsAmount) || 150;
+
+    // 1. Snappy local calculation for immediate UI updates
+    let calculatedGoalMl = Math.round(formulaWeight * 35);
+    if (creatineEnabled) {
+      calculatedGoalMl += 750;
+    }
+    if (stimulantsEnabled) {
+      calculatedGoalMl += 300;
+    }
+    calculatedGoalMl = Math.min(6000, Math.max(1500, calculatedGoalMl));
+
+    const localExplanation = `Based on your metrics of ${weightNum}${userState.useLb ? "lb" : "kg"}, customized container capacity, and supplement profile, you require approximately ${calculatedGoalMl} ml to sustain physiological cellular hydration.`;
+
+    const configUpdate: WaterConfig = {
+      height: heightNum,
+      weight: weightNum,
+      age: ageNum,
+      containerType,
+      capacity: capacityNum,
+      capacityUnit,
+      creatineEnabled,
+      creatineAmount: creatineAmtNum,
+      stimulantsEnabled,
+      stimulantsAmount: stimulantsAmtNum,
+      aiExplanation: localExplanation,
+      calculatedGoalMl
+    };
+
+    if (onUpdateWaterConfig) {
+      onUpdateWaterConfig(configUpdate);
+    }
+
+    try {
+      // 2. Refresh with Gemini analysis in base system
+      const res = await fetch("/api/water-recommendation", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          height: heightNum,
+          weight: formulaWeight,
+          age: ageNum,
+          creatineEnabled,
+          creatineAmount: creatineAmtNum,
+          stimulantsEnabled,
+          stimulantsAmount: stimulantsAmtNum,
+          containerType,
+          capacity: capacityNum,
+          capacityUnit
+        })
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        if (data.recommendedGoalMl && data.aiExplanation) {
+          if (onUpdateWaterConfig) {
+            onUpdateWaterConfig({
+              ...configUpdate,
+              calculatedGoalMl: data.recommendedGoalMl,
+              aiExplanation: data.aiExplanation
+            });
+          }
+        }
+      }
+    } catch (err) {
+      console.warn("AI recommendation fetching failed, utilizing robust mathematical fallback", err);
+    } finally {
+      setSavingSettings(false);
+      setShowWaterSettings(false);
+    }
+  };
 
   const todayKey = new Date().toISOString().slice(0, 10);
 
   // Water calculations
-  const wUnit = WATER_UNITS[userState.waterUnit] || WATER_UNITS.glass;
-  const unitsNeeded = wUnit.mlPer > 0 ? Math.ceil(userState.waterGoal / wUnit.mlPer) : 0;
+  const wConfig: WaterConfig = userState.waterConfig || DEFAULT_WATER_CONFIG;
+
+  const getCapacityInMl = (cap: number, unit: "ml" | "lt" | "oz"): number => {
+    if (unit === "lt") return cap * 1000;
+    if (unit === "oz") return cap * 29.5735;
+    return cap;
+  };
+
+  const wUnitSizeMl = getCapacityInMl(wConfig.capacity, wConfig.capacityUnit);
+  const targetUnits = userState.waterGoal > 0 && wUnitSizeMl > 0 
+    ? Math.round((userState.waterGoal / wUnitSizeMl) * 10) / 10 
+    : 0;
+
   const unitsDone = userState.waterLog[todayKey] || 0;
-  const mlDone = unitsDone * wUnit.mlPer;
+  const mlDone = unitsDone * wUnitSizeMl;
   const rawPct = userState.waterGoal > 0 ? Math.round((mlDone / userState.waterGoal) * 100) : 0;
   const waterPct = isNaN(rawPct) || !isFinite(rawPct) ? 0 : Math.min(100, Math.max(0, rawPct));
 
@@ -263,12 +465,38 @@ export default function HealthTab({
           {/* Water card logger */}
           <div className="bg-[#13111f] border border-[#2a2440] p-5 rounded-2xl shadow">
             <div className="flex justify-between items-center mb-3">
-              <span className="text-[10px] text-[#6b6485] font-mono tracking-wider uppercase">
-                Water Target Checklist
-              </span>
-              <span className="text-[10px] font-mono text-[#3ab4f2]">
-                {Math.round(mlDone)} / {userState.waterGoal} ml
-              </span>
+              <div className="flex flex-col gap-0.5">
+                <span className="text-[10px] text-[#6b6485] font-mono tracking-wider uppercase">
+                  Water Hydration Target
+                </span>
+                <span className="text-[9px] font-mono text-[#3ab4f2]/70">
+                  {Math.round(mlDone)} / {userState.waterGoal} ml
+                </span>
+              </div>
+              <div className="flex items-center gap-3">
+                <div className="flex items-baseline gap-1 font-mono">
+                  <span className="text-2xl font-bold font-bebas text-[#3ab4f2] leading-none" id="water-bottles-consumed-count">
+                    {unitsDone}
+                  </span>
+                  <span className="text-[10px] text-[#6b6485] font-bold">
+                    / {Math.round(targetUnits * 10) / 10} {wConfig.containerType === 'bottle' ? 'bottles' : 'glasses'}
+                  </span>
+                </div>
+                
+                {/* Premium Minimal Settings Gear */}
+                <button
+                  type="button"
+                  onClick={() => setShowWaterSettings(true)}
+                  className="p-1 px-1.5 text-[#6b6485] hover:text-[#3ab4f2] hover:bg-[#1f1a3a] rounded-lg transition-all active:scale-90 cursor-pointer"
+                  title="Configure physical hydration settings"
+                  id="water-settings-gear-btn"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="2">
+                     <path strokeLinecap="round" strokeLinejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                     <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                  </svg>
+                </button>
+              </div>
             </div>
 
             {/* Hydration progress line */}
@@ -398,98 +626,325 @@ export default function HealthTab({
               </motion.div>
             </div>
 
-            {/* Quick selectors for units */}
-            <div className="grid grid-cols-2 gap-1.5 mb-4 font-mono text-[9px]">
-              {Object.entries(WATER_UNITS).map(([key, item]) => (
+            {/* Premium, Minimal Log Input Console */}
+            <div className="flex flex-col gap-3 mt-2">
+              <div className="flex gap-2">
+                {/* Primary Wide Action Logging Button */}
                 <button
-                  key={key}
-                  onClick={() => onUpdateWaterUnit(key)}
-                  className={`py-1.5 px-1 bg-[#17142a] border rounded-lg text-center leading-normal cursor-pointer transition-all ${
-                    userState.waterUnit === key
-                      ? "border-[#3ab4f2] bg-gradient-to-br from-[#3ab4f215] to-[#1e7fc415] text-[#3ab4f2]"
-                      : "border-[#221d35] text-[#9991b8] hover:border-[#3ab4f2]"
-                  }`}
+                  type="button"
+                  onClick={() => onLogWater("increment")}
+                  className="flex-1 py-3.5 bg-gradient-to-r from-[#3ab4f2] to-[#1e7fc4] hover:brightness-105 active:scale-[0.98] text-[#0d0b14] font-bold font-mono text-xs rounded-xl shadow-md transition-all cursor-pointer flex items-center justify-center gap-1.5"
+                  id="add-water-unit-btn"
                 >
-                  <span className="text-[13px] block mb-0.5">{item.icon}</span>
-                  {item.label}
+                  <span className="text-[14px]">
+                    {wConfig.containerType === 'bottle' ? '🍶' : '🥛'}
+                  </span>
+                  Add {wConfig.containerType === 'bottle' ? 'Bottle' : 'Glass'} (+{wConfig.capacity}{wConfig.capacityUnit})
                 </button>
-              ))}
-            </div>
 
-            {/* Goal adjusting strip */}
-            <div className="flex gap-2 items-center mb-4 text-xs font-mono">
-              <span className="text-[#6b6485]">Daily target:</span>
-              <input
-                type="number"
-                value={tempGoal}
-                onChange={e => setTempGoal(e.target.value)}
-                placeholder="2000"
-                className="flex-1 text-center bg-[#17142a] border border-[#221d35] rounded-lg p-2.5 text-xs text-white placeholder-[#221d35] focus:outline-none"
-              />
-              <span className="text-[#6b6485]">ml</span>
-              <button
-                onClick={() => {
-                  const goalNum = parseInt(tempGoal);
-                  if (goalNum > 0) onUpdateWaterGoal(goalNum);
-                }}
-                className="px-3 py-2 bg-gradient-to-r from-[#f0c972] to-[#e07b3f] text-[#0d0b14] font-bold rounded-lg cursor-pointer"
-              >
-                Set
-              </button>
-            </div>
-
-            <div className="text-[10px] text-[#6b6485] font-mono uppercase tracking-wider mb-2 select-none">
-              Tap to check/log units — {unitsDone} / {unitsNeeded} {wUnit.label} Done
-            </div>
-
-            {/* Tap log widgets */}
-            <div className="flex flex-wrap gap-2">
-              {Array.from({ length: unitsNeeded }).map((_, i) => {
-                const checked = i < unitsDone;
-                return (
+                {/* Optional Decrement minus adjuster */}
+                {unitsDone > 0 && (
                   <button
-                    key={i}
-                    onClick={() => onLogWater(i)}
-                    className="w-10 h-12 flex flex-col items-center justify-center border rounded-lg cursor-pointer font-mono outline-none transition-all active:scale-95"
-                    style={{
-                      borderColor: checked ? "#3ab4f2" : "#221d35",
-                      background: checked ? "linear-gradient(180deg, #3ab4f220, #1e7fc420)" : "#17142a",
-                      color: checked ? "#3ab4f2" : "#3d3657"
-                    }}
+                    type="button"
+                    onClick={() => onLogWater("decrement")}
+                    className="px-4 bg-[#17142a] border border-[#2a2440] hover:border-red-500/30 text-[#6b6485] hover:text-red-400 rounded-xl transition-all active:scale-[0.98] cursor-pointer flex items-center justify-center"
+                    title="Remove logged container unit"
+                    id="remove-water-unit-btn"
                   >
-                    <span className="text-sm leading-none mb-1">{wUnit.icon}</span>
-                    <span className="text-[8px]">{i + 1}</span>
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="2.5">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M20 12H4" />
+                    </svg>
                   </button>
-                );
-              })}
-            </div>
+                )}
+              </div>
 
-            {unitsDone > 0 && (
+              {/* Toggle Analysis Button */}
               <button
-                onClick={onResetWater}
-                className="mt-3.5 block text-[10px] text-[#6b6485] hover:text-white underline font-mono cursor-pointer"
+                type="button"
+                onClick={() => setShowAnalysis(!showAnalysis)}
+                className="w-full mt-1.5 py-3.5 px-4 bg-[#1b1735] hover:bg-[#231d45] border border-[#2b2452] text-[#8ce0ff] hover:text-white font-mono text-[11px] font-bold tracking-wider rounded-xl hover:brightness-105 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1.5 text-center shadow-sm"
+                id="toggle-water-analysis-btn"
               >
-                Reset logs for today
+                <span>{showAnalysis ? "Hide Hydration Analysis 🔬" : "View Personalized Hydration Analysis 🔬"}</span>
               </button>
-            )}
+
+              {unitsDone > 0 && (
+                <button
+                  type="button"
+                  onClick={onResetWater}
+                  className="self-center mt-1 text-[10px] text-[#6b6485] hover:text-white underline font-mono cursor-pointer transition-colors"
+                  id="reset-water-btn"
+                >
+                  Reset today's hydration logs
+                </button>
+              )}
+            </div>
           </div>
 
-          {/* Supplements checklist portion */}
-          <div className="flex justify-between items-center mt-3 mb-1">
-            <span className="text-[10px] text-[#6b6485] font-mono tracking-wider uppercase">
+          {/* Underneath Hydration explanation block - Why you need this water */}
+          <AnimatePresence>
+            {showAnalysis && (
+              <motion.div
+                initial={{ opacity: 0, y: -8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -8 }}
+                className="mt-3 p-4 bg-[#15122b]/50 border border-[#231d3d] rounded-xl flex gap-3 items-start relative overflow-hidden shadow"
+              >
+                <div className="absolute top-0 left-0 h-full w-1 bg-[#3ab4f2]" />
+                <div className="text-base select-none mt-0.5 leading-none" aria-hidden="true">🔬</div>
+                <div className="flex flex-col gap-1">
+                  <span className="text-[9px] font-mono uppercase tracking-wider text-[#3ab4f2] font-semibold leading-none">
+                    Physiological Hydration Analysis
+                  </span>
+                  <p className="text-[11px] text-[#9991b8] leading-relaxed font-sans">
+                    {wConfig.aiExplanation || "Input your personalized metrics using the gear icon to calculate your scientific baseline daily hydration needs."}
+                  </p>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+      {/* WATER CONFIG SETTINGS GEAR MODAL */}
+      <AnimatePresence>
+        {showWaterSettings && (
+          <div className="fixed inset-0 bg-[#07050bdd]/90 backdrop-blur-md z-50 flex items-center justify-center p-4">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="bg-[#13111f] border border-[#2a2440] rounded-3xl p-6 max-w-sm w-full shadow-2xl relative flex flex-col gap-4"
+            >
+              <div className="flex justify-between items-center pb-2 border-b border-[#221d35]">
+                <h3 className="font-bebas text-2xl tracking-wider text-[#e8e3f8] flex items-center gap-1.5 leading-none">
+                  ⚙️ Hydration Calculator
+                </h3>
+                <button
+                  type="button"
+                  onClick={() => setShowWaterSettings(false)}
+                  className="text-[#6b6485] hover:text-white p-1 text-base font-bold select-none cursor-pointer"
+                >
+                  ✕
+                </button>
+              </div>
+
+              {/* Height Weight Age row */}
+              <div className="grid grid-cols-3 gap-2">
+                <div className="flex flex-col gap-1">
+                  <label className="text-[9px] font-mono text-[#6b6485] uppercase">Height</label>
+                  <div className="relative flex items-center">
+                    <input
+                      type="number"
+                      value={height}
+                      onChange={e => setHeight(e.target.value)}
+                      placeholder="175"
+                      className="w-full bg-[#17142a] border border-[#221d35] rounded-xl p-2 text-xs text-center text-white focus:outline-none"
+                    />
+                    <span className="absolute right-2 text-[8px] font-mono text-[#6b6485] pointer-events-none">cm</span>
+                  </div>
+                </div>
+
+                <div className="flex flex-col gap-1">
+                  <label className="text-[9px] font-mono text-[#6b6485] uppercase">
+                    Weight ({userState.useLb ? "lb" : "kg"})
+                  </label>
+                  <div className="relative flex items-center">
+                    <input
+                      type="number"
+                      value={weight}
+                      onChange={e => setWeight(e.target.value)}
+                      placeholder={userState.useLb ? "165" : "75"}
+                      className="w-full bg-[#17142a] border border-[#221d35] rounded-xl p-2 text-xs text-center text-white focus:outline-none"
+                    />
+                    <span className="absolute right-2 text-[8px] font-mono text-[#6b6485] pointer-events-none">
+                      {userState.useLb ? "lb" : "kg"}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="flex flex-col gap-1">
+                  <label className="text-[9px] font-mono text-[#6b6485] uppercase">Age</label>
+                  <div className="relative flex items-center">
+                    <input
+                      type="number"
+                      value={age}
+                      onChange={e => setAge(e.target.value)}
+                      placeholder="28"
+                      className="w-full bg-[#17142a] border border-[#221d35] rounded-xl p-2 text-xs text-center text-white focus:outline-none"
+                    />
+                    <span className="absolute right-2 text-[8px] font-mono text-[#6b6485] pointer-events-none">yrs</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Container Selection & Size */}
+              <div className="flex flex-col gap-2.5 bg-[#17142a] border border-[#221d35]/60 p-3 rounded-2xl">
+                <span className="text-[9px] font-mono text-[#6b6485] uppercase tracking-wider">
+                  Receptacle Type & Unit Volume
+                </span>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setContainerType("glass")}
+                    className={`flex-1 py-1.5 rounded-lg text-xs font-mono font-bold border transition-colors cursor-pointer ${
+                      containerType === "glass"
+                        ? "bg-[#3ab4f2]/10 border-[#3ab4f2] text-[#3ab4f2]"
+                        : "bg-transparent border-[#221d35] text-[#6b6485] hover:text-[#9991b8]"
+                    }`}
+                  >
+                    🥛 Glass
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setContainerType("bottle")}
+                    className={`flex-1 py-1.5 rounded-lg text-xs font-mono font-bold border transition-colors cursor-pointer ${
+                      containerType === "bottle"
+                        ? "bg-[#3ab4f2]/10 border-[#3ab4f2] text-[#3ab4f2]"
+                        : "bg-transparent border-[#221d35] text-[#6b6485] hover:text-[#9991b8]"
+                    }`}
+                  >
+                    Bottle
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 text-xs">
+                  <div className="relative flex items-center">
+                    <input
+                      type="number"
+                      value={capacity}
+                      onChange={e => setCapacity(e.target.value)}
+                      placeholder={containerType === "bottle" ? "1000" : "250"}
+                      className="w-full bg-[#0c0914] border border-[#221d35] rounded-xl p-2 text-xs text-center text-white focus:outline-none"
+                    />
+                  </div>
+                  
+                  <div className="grid grid-cols-3 bg-[#0c0914] border border-[#221d35] rounded-xl p-0.5 text-[10px] font-mono">
+                    {(["ml", "lt", "oz"] as const).map(u => (
+                      <button
+                        key={u}
+                        type="button"
+                        onClick={() => setCapacityUnit(u)}
+                        className={`py-1 rounded-md text-center transition-all cursor-pointer font-bold ${
+                          capacityUnit === u ? "bg-[#3ab4f2] text-[#0d0b14]" : "text-[#6b6485] hover:text-[#beb3f5]"
+                        }`}
+                      >
+                        {u}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* Creatine Supplement */}
+              <div className="flex flex-col gap-2 bg-[#17142a] border border-[#221d35]/60 p-3 rounded-2xl">
+                <div className="flex justify-between items-center">
+                  <span className="text-[10px] font-mono font-bold text-[#e8e3f8] flex items-center gap-1.5">
+                    💊 Taking Creatine?
+                  </span>
+                  <input
+                    type="checkbox"
+                    checked={creatineEnabled}
+                    onChange={e => setCreatineEnabled(e.target.checked)}
+                    className="w-4 h-4 rounded border-[#2a2440] text-[#3ab4f2] focus:ring-0 focus:ring-offset-0 bg-[#0c0914] cursor-pointer"
+                  />
+                </div>
+                {creatineEnabled && (
+                  <div className="flex items-center justify-between gap-4 mt-1.5 pt-1.5 border-t border-[#221d35]/50">
+                    <span className="text-[10px] text-[#6b6485] font-mono">DAILY DOSAGE:</span>
+                    <div className="relative flex items-center max-w-[100px]">
+                      <input
+                        type="number"
+                        value={creatineAmount}
+                        onChange={e => setCreatineAmount(e.target.value)}
+                        placeholder="5"
+                        className="w-full bg-[#0c0914] border border-[#221d35] rounded-lg py-1 px-2.5 text-xs text-center text-white focus:outline-none"
+                      />
+                      <span className="absolute right-2 text-[8px] font-mono text-[#6b6485] pointer-events-none">g</span>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Stimulants Supplement */}
+              <div className="flex flex-col gap-2 bg-[#17142a] border border-[#221d35]/60 p-3 rounded-2xl">
+                <div className="flex justify-between items-center">
+                  <span className="text-[10px] font-mono font-bold text-[#e8e3f8] flex items-center gap-1.5">
+                    ☕ Taking Stimulants / Caffeine?
+                  </span>
+                  <input
+                    type="checkbox"
+                    checked={stimulantsEnabled}
+                    onChange={e => setStimulantsEnabled(e.target.checked)}
+                    className="w-4 h-4 rounded border-[#2a2440] text-[#3ab4f2] focus:ring-0 focus:ring-offset-0 bg-[#0c0914] cursor-pointer"
+                  />
+                </div>
+                {stimulantsEnabled && (
+                  <div className="flex items-center justify-between gap-4 mt-1.5 pt-1.5 border-t border-[#221d35]/50">
+                    <span className="text-[10px] text-[#6b6485] font-mono">DAILY ESTIMATE:</span>
+                    <div className="relative flex items-center max-w-[100px]">
+                      <input
+                        type="number"
+                        value={stimulantsAmount}
+                        onChange={e => setStimulantsAmount(e.target.value)}
+                        placeholder="150"
+                        className="w-full bg-[#0c0914] border border-[#221d35] rounded-lg py-1 px-2.5 text-xs text-center text-white focus:outline-none"
+                      />
+                      <span className="absolute right-2 text-[8px] font-mono text-[#6b6485] pointer-events-none">mg</span>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {settingsError && (
+                <div className="text-[10px] text-red-400 font-mono text-center">
+                  ⚠️ {settingsError}
+                </div>
+              )}
+
+              <button
+                type="button"
+                disabled={savingSettings}
+                onClick={handleSaveWaterConfig}
+                className="w-full py-3 bg-gradient-to-r from-[#3ab4f2] to-[#1e7fc4] text-[#0d0b14] font-bold font-mono text-xs rounded-xl shadow cursor-pointer active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed transition-all mt-2 flex items-center justify-center gap-1.5"
+                id="save-hydration-settings-btn"
+              >
+                {savingSettings ? (
+                  <span className="flex items-center gap-1.5">
+                    <span className="w-3.5 h-3.5 border-2 border-[#0d0b14] border-t-transparent rounded-full animate-spin" />
+                    Calculating with AI...
+                  </span>
+                ) : (
+                  "Save & Optimize with AI"
+                )}
+              </button>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Supplements checklist portion */}
+      <div className="flex justify-between items-center mt-3 mb-1 flex-wrap gap-1.5">
+        <span className="text-[10px] text-[#6b6485] font-mono tracking-wider uppercase">
               Daily Supplements
             </span>
-            <button
-              onClick={() => {
-                setSuppName("");
-                setSuppDosage("");
-                setSelectedSlots([]);
-                setSuppModalOpen(true);
-              }}
-              className="bg-gradient-to-r from-[#f0c972] to-[#e07b3f] text-[#0d0b14] font-mono text-[10px] font-bold px-3 py-1.5 rounded-lg shadow cursor-pointer active:scale-95"
-            >
-              + Add Supplement
-            </button>
+            <div className="flex gap-1.5">
+              <button
+                onClick={() => setAiModalOpen(true)}
+                className="bg-gradient-to-r from-[#8b5cf6] to-[#6d28d9] text-white font-mono text-[9px] font-bold px-2.5 py-1.5 rounded-lg shadow cursor-pointer active:scale-95 flex items-center gap-1"
+              >
+                <span>✨</span> AI Recommend
+              </button>
+              <button
+                onClick={() => {
+                  setSuppName("");
+                  setSuppDosage("");
+                  setSelectedSlots([]);
+                  setSuppModalOpen(true);
+                }}
+                className="bg-gradient-to-r from-[#f0c972] to-[#e07b3f] text-[#0d0b14] font-mono text-[9px] font-bold px-2.5 py-1.5 rounded-lg shadow cursor-pointer active:scale-95"
+              >
+                + Add Custom
+              </button>
+            </div>
           </div>
 
           <div className="space-y-3.5">
@@ -907,6 +1362,121 @@ export default function HealthTab({
                 Save
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* AI RECOMMENDATION MODAL */}
+      {aiModalOpen && (
+        <div className="fixed inset-0 bg-[#0d0b14cc] z-50 flex items-end justify-center">
+          <div className="bg-[#0e0c1a] border-t border-x border-[#2a2440] rounded-t-3xl p-6 w-full max-w-md max-h-[90vh] overflow-y-auto flex flex-col gap-4 animate-in slide-in-from-bottom duration-200">
+            <div className="flex justify-between items-center">
+              <div>
+                <span className="font-bebas text-2xl tracking-wider text-[#8b5cf6] block">AI Supplement Recommendation</span>
+                <span className="block text-[8px] font-mono text-[#6b6485] uppercase tracking-wider mt-0.5 font-bold">Optimal Dosage & Timing Engine</span>
+              </div>
+              <button 
+                onClick={() => setAiModalOpen(false)}
+                className="w-6 h-6 rounded-full bg-[#17142a] border border-[#2a2440] text-gray-400 hover:text-white flex items-center justify-center font-bold text-xs"
+              >
+                ×
+              </button>
+            </div>
+
+            <div className="space-y-1.5 text-left">
+              <label className="text-[10px] text-[#9991b8] font-mono uppercase tracking-wider block">Health & Performance Goals:</label>
+              <textarea
+                placeholder="Describe your goals (e.g. improve sleep & recovery, reduce stress & anxiety, boost daily focus, joint support for running)..."
+                value={aiGoal}
+                onChange={e => setAiGoal(e.target.value)}
+                rows={3}
+                className="w-full bg-[#13111f] border border-[#2a2440] rounded-xl p-3 text-xs font-mono text-white placeholder-[#2e2845] focus:outline-none focus:border-[#8b5cf6]"
+              />
+            </div>
+
+            <button
+              onClick={handleFetchAiRecommendations}
+              disabled={aiLoading || !aiGoal.trim()}
+              className="w-full bg-gradient-to-r from-[#8b5cf6] to-[#6d28d9] hover:brightness-110 active:scale-[0.98] transition-all text-white font-mono text-xs font-bold py-3 rounded-xl flex items-center justify-center gap-2 disabled:opacity-40"
+            >
+              {aiLoading ? (
+                <>
+                  <div className="w-3.5 h-3.5 border-2 border-white/60 border-t-transparent rounded-full animate-spin" />
+                  <span>Formulating protocol...</span>
+                </>
+              ) : (
+                <>
+                  <span>✨</span>
+                  <span>Get AI Supplement Plan</span>
+                </>
+              )}
+            </button>
+
+            {aiError && (
+              <div className="p-3 border border-red-500/25 bg-red-950/20 rounded-xl text-[10px] font-mono text-red-400 text-left">
+                ⚠️ Error: {aiError}
+              </div>
+            )}
+
+            {aiRecs.length > 0 && (
+              <div className="space-y-3 mt-1.5">
+                <span className="text-[10px] text-[#6b6485] font-mono tracking-wider uppercase block text-left">Tailored Supplement Plan:</span>
+                
+                <div className="space-y-2.5 max-h-60 overflow-y-auto scrollbar-none pr-0.5 text-left">
+                  {aiRecs.map((rec, idx) => (
+                    <div 
+                      key={idx} 
+                      onClick={() => {
+                        setAiRecs(prev => prev.map((item, i) => i === idx ? { ...item, selected: !item.selected } : item));
+                      }}
+                      className={`p-3 border rounded-xl bg-[#141224] cursor-pointer transition-all flex gap-3 ${
+                        rec.selected ? "border-[#8b5cf6] bg-[#8b5cf6]/5 shadow-sm shadow-[#8b5cf6]/10" : "border-[#221d35] opacity-50"
+                      }`}
+                    >
+                      <div className="pt-0.5">
+                        <div className={`w-4 h-4 rounded border flex items-center justify-center text-[10px] font-bold ${
+                          rec.selected ? "bg-[#8b5cf6] border-[#8b5cf6] text-white" : "border-[#3d3657]"
+                        }`}>
+                          {rec.selected ? "✓" : ""}
+                        </div>
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex justify-between items-start gap-2">
+                          <span className="font-mono text-xs text-white font-semibold block leading-tight">{rec.name}</span>
+                          <span className="font-mono text-[9px] text-[#8b5cf6] font-bold bg-[#8b5cf6]/10 px-1.5 py-0.2 rounded shrink-0">{rec.dosage}</span>
+                        </div>
+                        
+                        <p className="font-mono text-[9px] text-[#9991b8] leading-relaxed mt-1">{rec.reason}</p>
+                        
+                        <div className="flex flex-wrap gap-1 mt-2">
+                          {rec.times.map(t => (
+                            <span key={t} className="text-[7.5px] font-mono uppercase tracking-wider px-1.5 py-0.5 bg-[#1e1a35] border border-[#2e2652] text-[#cbbfff] rounded-md font-semibold">
+                              ⏰ {t}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="flex gap-2 font-mono text-xs mt-2">
+                  <button
+                    onClick={() => setAiRecs([])}
+                    className="flex-1 bg-[#13111f] border border-[#221d35] rounded-xl py-3 text-[#6b6485] hover:text-white"
+                  >
+                    Reset
+                  </button>
+                  <button
+                    onClick={handleAddAiSupplements}
+                    disabled={aiRecs.every(s => !s.selected)}
+                    className="flex-grow bg-gradient-to-r from-[#8b5cf6] to-[#6d28d9] text-white font-bold rounded-xl py-3 disabled:opacity-40 flex items-center justify-center gap-1.5 cursor-pointer"
+                  >
+                    🚀 Add Scheduled ({aiRecs.filter(s => s.selected).length})
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}

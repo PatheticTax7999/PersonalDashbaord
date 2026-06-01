@@ -2,23 +2,18 @@ import { useState, useEffect } from "react";
 import { UserState, Goal, CalendarEvent } from "../types";
 import { motion, AnimatePresence } from "motion/react";
 
-// Goal priority parsing helper (automatically detects ending with !, !!, or !!! for badges)
-const parseGoalText = (rawText: any) => {
-  let priority: "high" | "medium" | "low" | null = null;
-  let text = typeof rawText === "string" ? rawText : "";
-  
-  if (text.endsWith("!!!")) {
-    priority = "high";
-    text = text.slice(0, -3).trim();
-  } else if (text.endsWith("!!")) {
-    priority = "medium";
-    text = text.slice(0, -2).trim();
-  } else if (text.endsWith("!")) {
-    priority = "low";
-    text = text.slice(0, -1).trim();
-  }
-  
-  return { text, priority };
+const sortGoals = (goals: Goal[]): Goal[] => {
+  return [...goals].sort((a, b) => {
+    // Undone first
+    if (a.done && !b.done) return 1;
+    if (!a.done && b.done) return -1;
+    
+    // Lightning first
+    if (a.lightning && !b.lightning) return -1;
+    if (!a.lightning && b.lightning) return 1;
+    
+    return 0;
+  });
 };
 
 // Constants for slots and display
@@ -42,11 +37,14 @@ interface HomeTabProps {
   onDisconnectGcal: () => void;
   onRefreshGcal: () => void;
   onToggleGoal: (id: string) => void;
-  onAddTodayGoal: (text: string) => void;
+  onAddTodayGoal: (text: string, priority?: "high" | "medium" | "low") => void;
   onRemoveTodayGoal: (id: string) => void;
-  onAddTomorrowGoal: (text: string) => void;
+  onAddTomorrowGoal: (text: string, priority?: "high" | "medium" | "low") => void;
   onRemoveTomorrowGoal: (id: string) => void;
   onToggleSuppCheck: (suppId: string, slotKey: string) => void;
+  onToggleLightningGoal?: (id: string, isToday: boolean) => void;
+  onMoveActiveToTomorrow?: () => void;
+  onMoveGoal?: (id: string, fromList: "today" | "tomorrow", toList: "today" | "tomorrow") => void;
 }
 
 export default function HomeTab({
@@ -63,11 +61,16 @@ export default function HomeTab({
   onRemoveTodayGoal,
   onAddTomorrowGoal,
   onRemoveTomorrowGoal,
-  onToggleSuppCheck
+  onToggleSuppCheck,
+  onToggleLightningGoal,
+  onMoveActiveToTomorrow,
+  onMoveGoal
 }: HomeTabProps) {
   const [now, setNow] = useState(new Date());
   const [newTodayText, setNewTodayText] = useState("");
   const [newTomorrowText, setNewTomorrowText] = useState("");
+  const [isDragOverToday, setIsDragOverToday] = useState(false);
+  const [isDragOverTomorrow, setIsDragOverTomorrow] = useState(false);
 
   // Clock tick
   useEffect(() => {
@@ -171,6 +174,7 @@ export default function HomeTab({
 
   // Build Daily Schedule items
   const buildTodaySchedule = () => {
+    const todayStr = new Date().toISOString().slice(0, 10);
     const items: Array<
       | { type: "event"; ev: CalendarEvent; sortKey: string }
       | { type: "goal"; goal: Goal; sortKey: string }
@@ -178,7 +182,10 @@ export default function HomeTab({
     > = [];
 
     gcalEvents.forEach(ev => {
-      items.push({ type: "event", ev, sortKey: ev.start?.dateTime || ev.start?.date || "0000" });
+      const startStr = ev.start?.dateTime || ev.start?.date;
+      if (startStr && startStr.slice(0, 10) === todayStr) {
+        items.push({ type: "event", ev, sortKey: ev.start?.dateTime || ev.start?.date || "0000" });
+      }
     });
 
     userState.todayGoals.forEach(g => {
@@ -186,7 +193,6 @@ export default function HomeTab({
     });
 
     const slotTimes: Record<string, string> = { morning: "06:00", afternoon: "12:00", evening: "17:00", night: "21:00" };
-    const todayStr = new Date().toISOString().slice(0, 10);
 
     TIME_SLOTS.forEach(slot => {
       const supps = userState.supplements.filter(s => s.times.includes(slot.key));
@@ -205,6 +211,71 @@ export default function HomeTab({
   };
 
   const scheduleItems = buildTodaySchedule();
+  const hasActiveGoalsToday = userState.todayGoals.some(g => !g.done);
+  const isAroundNinePM = now.getHours() >= 21 || now.getHours() < 5;
+
+  // Build high-density market stock ticker data from today's actual goals
+  const buildTickerItems = () => {
+    const defaultTicker = [
+      { text: "MARKET_INTEGRAL", val: "▲ STABLE", color: "text-emerald-400" },
+      { text: "DAILY_STREAK", val: `▲ +${userState.taskStreak || 0}`, color: "text-emerald-400" },
+      { text: "HYDRATION_INDEX", val: "▲ COMPLIANT", color: "text-emerald-400" },
+      { text: "METRIC_INTELLIGENCE", val: "▲ LIVE", color: "text-emerald-400" }
+    ];
+
+    if (userState.todayGoals.length === 0) {
+      return defaultTicker;
+    }
+
+    return userState.todayGoals.map(g => {
+      let code = g.text.trim()
+        .toUpperCase()
+        .replace(/[^A-Z0-9]/g, "_")
+        .replace(/__+/g, "_")
+        .replace(/^_+|_+$/g, "");
+      
+      if (!code) code = "TASK_INDEX_VAL";
+      if (code.length > 15) code = code.slice(0, 14) + "…";
+      
+      if (g.done) {
+        return {
+          text: code,
+          val: "▲ COMPLETED",
+          color: "text-emerald-400"
+        };
+      } else if (g.lightning) {
+        return {
+          text: code,
+          val: "⚡ HIGH_ENERGY",
+          color: "text-yellow-400"
+        };
+      } else {
+        return {
+          text: code,
+          val: "▼ ACTIVE",
+          color: "text-sky-400 select-none"
+        };
+      }
+    });
+  };
+
+  const tickerItems = buildTickerItems();
+
+  const [tickerIndex, setTickerIndex] = useState(0);
+
+  useEffect(() => {
+    if (tickerItems.length <= 1) return;
+    const interval = setInterval(() => {
+      setTickerIndex(prev => (prev + 1) % tickerItems.length);
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [tickerItems.length]);
+
+  useEffect(() => {
+    if (tickerIndex >= tickerItems.length) {
+      setTickerIndex(0);
+    }
+  }, [tickerItems.length, tickerIndex]);
 
   return (
     <div className="w-full max-w-md mx-auto py-6 px-4 pb-28 flex flex-col gap-5">
@@ -215,6 +286,34 @@ export default function HomeTab({
         </div>
         <div className="text-3xl font-serif text-[#e8e3f8] font-semibold">
           {getGreeting(now)}
+        </div>
+      </div>
+
+      {/* NASDAQ/ASX Stock Ticker */}
+      <div className="bg-[#0f0d1b] border border-[#231e3d] rounded-xl py-2 px-3 flex items-center overflow-hidden h-9 select-none shadow-[inset_0_1px_3px_rgba(0,0,0,0.6)]">
+        {/* Trading index green label */}
+        <div className="flex items-center gap-1.5 text-[9.5px] font-mono font-bold text-emerald-400 border-r border-[#231e3d] pr-3 shrink-0">
+          <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
+          <span>GOALS</span>
+        </div>
+        
+        {/* Rolling smooth vertical marquee panel */}
+        <div className="flex-grow overflow-hidden relative ml-3 h-full flex items-center">
+          <AnimatePresence mode="wait">
+            {tickerItems[tickerIndex] && (
+              <motion.div
+                key={tickerIndex}
+                initial={{ y: 15, opacity: 0 }}
+                animate={{ y: 0, opacity: 1 }}
+                exit={{ y: -15, opacity: 0 }}
+                transition={{ duration: 0.35, ease: [0.23, 1, 0.32, 1] }}
+                className="flex items-center gap-1.5 absolute left-0 right-0"
+              >
+                <span className="text-[#6b6485] truncate max-w-[180px] text-[10px] uppercase">{tickerItems[tickerIndex].text}</span>
+                <span className={`font-bold text-[10px] shrink-0 ${tickerItems[tickerIndex].color}`}>{tickerItems[tickerIndex].val}</span>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
       </div>
 
@@ -267,15 +366,48 @@ export default function HomeTab({
         </div>
       </div>
 
+      {/* Daily Goal Completion Streak */}
+      <div className="flex justify-center -mb-2 z-10 select-none">
+        <div className="flex items-center gap-1 bg-[#261517] border border-[#ff4e4e]/15 px-3 py-1 rounded-full text-[#ff6868] shadow-sm">
+          <span className="text-xs" role="img" aria-label="streak fire">🔥</span>
+          <span className="font-mono text-[9px] font-bold uppercase tracking-wider">
+            Streak: <span className="text-white font-bold text-xs ml-0.5">{userState.taskStreak || 0}</span> days
+          </span>
+        </div>
+      </div>
+
       {/* Today's Goals Card */}
-      <div className="bg-[#13111f] border border-[#2a2440] rounded-2xl p-5 shadow-sm">
+      <div 
+        onDragOver={(e) => e.preventDefault()}
+        onDragEnter={() => setIsDragOverToday(true)}
+        onDragLeave={() => setIsDragOverToday(false)}
+        onDrop={(e) => {
+          setIsDragOverToday(false);
+          try {
+            const data = JSON.parse(e.dataTransfer.getData("text/plain"));
+            if (data.id && data.fromList === "tomorrow") {
+              onMoveGoal?.(data.id, "tomorrow", "today");
+            }
+          } catch (err) {}
+        }}
+        className={`bg-[#13111f] border rounded-2xl p-5 shadow-sm transition-all duration-200 ${
+          isDragOverToday 
+            ? "border-[#f0c972] bg-[#1a1727] scale-[1.01] shadow-[0_0_15px_rgba(240,201,114,0.1)]" 
+            : "border-[#2a2440]"
+        }`}
+      >
         <div className="flex justify-between items-center mb-3">
           <span className="text-[10px] text-[#6b6485] font-mono tracking-wider uppercase">
             Today's Goals
           </span>
-          <span className="text-[10px] font-mono text-[#f0c972]">
-            {doneGoalsCount}/{totalGoalsCount} — {goalsPct}%
-          </span>
+          <div className="flex items-baseline gap-1 font-mono">
+            <span className="text-2xl font-bold font-bebas text-[#f0c972] leading-none animate-in fade-in zoom-in-75 duration-200" id="tasks-completed-count">
+              {doneGoalsCount}
+            </span>
+            <span className="text-[10px] text-[#6b6485] font-bold transition-all">
+              / {totalGoalsCount - doneGoalsCount} left
+            </span>
+          </div>
         </div>
         
         {/* Progress bar */}
@@ -287,14 +419,14 @@ export default function HomeTab({
         </div>
 
         {/* Input area */}
-        <div className="flex gap-2 mb-3">
+        <div className="flex gap-2 mb-4">
           <input
             type="text"
             placeholder="Add a goal..."
             value={newTodayText}
             onChange={e => setNewTodayText(e.target.value)}
-            onKeyDown={e => {
-              if (e.key === "Enter" && newTodayText.trim()) {
+            onKeyDown={keyEvent => {
+              if (keyEvent.key === "Enter" && newTodayText.trim()) {
                 onAddTodayGoal(newTodayText.trim());
                 setNewTodayText("");
               }
@@ -308,40 +440,38 @@ export default function HomeTab({
                 setNewTodayText("");
               }
             }}
-            className="px-3 bg-gradient-to-r from-[#f0c972] to-[#e07b3f] text-[#0d0b14] font-bold rounded-lg hover:brightness-110 active:scale-95 focus:outline-none cursor-pointer"
+            className="px-3 bg-gradient-to-r from-[#f0c972] to-[#e07b3f] text-[#0d0b14] font-bold rounded-lg hover:brightness-110 active:scale-95 focus:outline-none cursor-pointer text-sm"
           >
             +
           </button>
         </div>
 
         {/* Goals list */}
-        <div className="space-y-1.5 max-h-48 overflow-y-auto scrollbar-none">
+        <div className="space-y-1.5 max-h-56 overflow-y-auto scrollbar-none">
           {userState.todayGoals.length === 0 ? (
             <div className="text-center text-xs py-4 text-[#3d3657] font-mono">
               No tasks left. Keep it up!
             </div>
           ) : (
             <AnimatePresence initial={false}>
-              {userState.todayGoals.map(g => {
-                const parsed = parseGoalText(g.text);
+              {sortGoals(userState.todayGoals).map(g => {
                 let borderStyle = g.done ? "border-[#6fcf9733] opacity-60" : "border-[#221d35]";
-                if (!g.done) {
-                  if (parsed.priority === "high") {
-                    borderStyle = "border-l-2 border-l-red-500 border-r-[#221d35] border-t-[#221d35] border-b-[#221d35]";
-                  } else if (parsed.priority === "medium") {
-                    borderStyle = "border-l-2 border-l-amber-500 border-r-[#221d35] border-t-[#221d35] border-b-[#221d35]";
-                  } else if (parsed.priority === "low") {
-                    borderStyle = "border-l-2 border-l-[#3ab4f2] border-r-[#221d35] border-t-[#221d35] border-b-[#221d35]";
-                  }
+                if (!g.done && g.lightning) {
+                  borderStyle = "border-l-2 border-l-yellow-400 border-r-[#221d35] border-t-[#221d35] border-b-[#221d35] bg-[#1d1732] shadow-[0_0_8px_rgba(250,204,21,0.06)] animate-pulse-subtle";
                 }
 
                 return (
                   <motion.div
                     key={g.id}
+                    layoutId={g.id}
                     initial={{ opacity: 0, y: 5 }}
                     animate={{ opacity: 1, y: 0 }}
                     exit={{ opacity: 0, scale: 0.95 }}
-                    className={`flex items-center gap-3 bg-[#1e1a30] border rounded-xl px-3 py-2 transition-all ${borderStyle}`}
+                    draggable={true}
+                    onDragStart={(e) => {
+                      e.dataTransfer.setData("text/plain", JSON.stringify({ id: g.id, fromList: "today" }));
+                    }}
+                    className={`flex items-center gap-3 bg-[#1e1a30] border rounded-xl px-3 py-2 cursor-grab active:cursor-grabbing hover:bg-[#231e38] transition-colors select-none ${borderStyle}`}
                   >
                     <button
                       onClick={() => onToggleGoal(g.id)}
@@ -353,26 +483,34 @@ export default function HomeTab({
                     >
                       ✓
                     </button>
-                    <span
-                      onClick={() => onToggleGoal(g.id)}
-                      className={`flex-grow text-xs font-mono select-none cursor-pointer flex flex-wrap items-center gap-1.5 ${
-                        g.done ? "line-through text-[#6b6485]" : "text-[#e8e3f8]"
+                    <div className="flex-grow flex flex-col gap-1 min-w-0">
+                      <span
+                        onClick={() => onToggleGoal(g.id)}
+                        className={`text-xs font-mono cursor-pointer truncate ${
+                          g.done ? "line-through text-[#6b6485]" : "text-[#e8e3f8]"
+                        }`}
+                      >
+                        {g.text}
+                      </span>
+                    </div>
+
+                    {/* Lightning Bolt priority toggle */}
+                    <button
+                      type="button"
+                      onClick={() => onToggleLightningGoal?.(g.id, true)}
+                      className={`text-xs p-1 rounded-md hover:bg-[#282142] transition-all cursor-pointer ${
+                        g.lightning 
+                          ? "text-yellow-400 drop-shadow-[0_0_5px_rgba(250,204,21,0.6)] font-bold scale-110" 
+                          : "text-[#3d3657] hover:text-[#5d5478]"
                       }`}
+                      title={g.lightning ? "Remove energy priority" : "Mark as high energy priority"}
                     >
-                      <span>{parsed.text}</span>
-                      {!g.done && parsed.priority && (
-                        <span className={`text-[7px] leading-none px-1 py-0.5 rounded font-bold tracking-wide uppercase shrink-0 font-mono ${
-                          parsed.priority === "high" ? "bg-red-950/40 text-[#ff5d5d] border border-red-500/20" :
-                          parsed.priority === "medium" ? "bg-amber-950/40 text-[#f0c972] border border-amber-500/20" :
-                          "bg-blue-950/40 text-[#3ab4f2] border border-[#3ab4f2]/20"
-                        }`}>
-                          {parsed.priority === "high" ? "🚨 Core" : parsed.priority === "medium" ? "⚡ Split" : "⚙️ Minor"}
-                        </span>
-                      )}
-                    </span>
+                      ⚡
+                    </button>
+
                     <button
                       onClick={() => onRemoveTodayGoal(g.id)}
-                      className="text-base text-[#3d3657] hover:text-[#9180c4] hover:scale-110 transition-all font-sans cursor-pointer h-5 leading-none"
+                      className="text-base text-[#3d3657] hover:text-[#ff5d5d] hover:scale-110 transition-all font-sans cursor-pointer h-5 leading-none"
                     >
                       ×
                     </button>
@@ -382,10 +520,46 @@ export default function HomeTab({
             </AnimatePresence>
           )}
         </div>
+        
+        {userState.todayGoals.length > 0 && (
+          <div className="text-center text-[8.5px] font-mono text-[#433b66] mt-2.5 leading-none uppercase tracking-wider select-none">
+            ↕ Grab tile to reorder or drag to tomorrow day
+          </div>
+        )}
+
+        {/* Do Tomorrow Bulk Button, shows up around 9 PM or later */}
+        {isAroundNinePM && hasActiveGoalsToday && (
+          <button
+            type="button"
+            onClick={onMoveActiveToTomorrow}
+            className="w-full mt-3.5 py-2.5 px-4 bg-gradient-to-r from-[#170e2b] to-[#251545] hover:from-[#21143c] hover:to-[#331d5e] border border-[#ff7a2f]/20 hover:border-[#ff7a2f]/40 text-[#ffae7a] hover:text-white font-mono text-[10.5px] font-bold tracking-wider rounded-xl hover:brightness-105 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-md"
+            id="do-tomorrow-bulk-btn"
+          >
+            <span>✨ Do Tomorrow (Snooze Active Tasks)</span>
+          </button>
+        )}
       </div>
 
       {/* Plan Ahead Tomorrow Card */}
-      <div className="bg-[#111020] border border-[#2a2440] rounded-2xl p-5 shadow-sm">
+      <div 
+        onDragOver={(e) => e.preventDefault()}
+        onDragEnter={() => setIsDragOverTomorrow(true)}
+        onDragLeave={() => setIsDragOverTomorrow(false)}
+        onDrop={(e) => {
+          setIsDragOverTomorrow(false);
+          try {
+            const data = JSON.parse(e.dataTransfer.getData("text/plain"));
+            if (data.id && data.fromList === "today") {
+              onMoveGoal?.(data.id, "today", "tomorrow");
+            }
+          } catch (err) {}
+        }}
+        className={`bg-[#111020] border rounded-2xl p-5 shadow-sm transition-all duration-200 ${
+          isDragOverTomorrow 
+            ? "border-[#9180c4] bg-[#16142c] scale-[1.01] shadow-[0_0_15px_rgba(145,128,196,0.1)]" 
+            : "border-[#2a2440]"
+        }`}
+      >
         <span className="text-[10px] text-[#6b6485] font-mono tracking-wider uppercase block mb-1">
           Tomorrow's Goals
         </span>
@@ -394,14 +568,14 @@ export default function HomeTab({
         </span>
 
         {/* Input area */}
-        <div className="flex gap-2 mb-3">
+        <div className="flex gap-2 mb-4">
           <input
             type="text"
             placeholder="Plan ahead..."
             value={newTomorrowText}
             onChange={e => setNewTomorrowText(e.target.value)}
-            onKeyDown={e => {
-              if (e.key === "Enter" && newTomorrowText.trim()) {
+            onKeyDown={keyEvent => {
+              if (keyEvent.key === "Enter" && newTomorrowText.trim()) {
                 onAddTomorrowGoal(newTomorrowText.trim());
                 setNewTomorrowText("");
               }
@@ -415,55 +589,63 @@ export default function HomeTab({
                 setNewTomorrowText("");
               }
             }}
-            className="px-3 bg-gradient-to-r from-[#9180c4] to-[#5a4a8a] text-white font-bold rounded-lg hover:brightness-110 active:scale-95 focus:outline-none cursor-pointer"
+            className="px-3 bg-gradient-to-r from-[#9180c4] to-[#5a4a8a] text-white font-bold rounded-lg hover:brightness-110 active:scale-95 focus:outline-none cursor-pointer text-sm"
           >
             +
           </button>
         </div>
 
-        {/* Play ahead list */}
-        <div className="space-y-1.5 max-h-40 overflow-y-auto scrollbar-none">
+        {/* Tomorrow list */}
+        <div className="space-y-1.5 max-h-48 overflow-y-auto scrollbar-none">
           {userState.tomorrowGoals.length === 0 ? (
             <div className="text-center text-xs py-3 text-[#2e2845] font-mono">
               Nothing queued for tomorrow.
             </div>
           ) : (
             <AnimatePresence initial={false}>
-              {userState.tomorrowGoals.map(tg => {
-                const parsed = parseGoalText(tg.text);
-                let borderStyle = "border-[#221d35]";
-                if (parsed.priority === "high") {
-                   borderStyle = "border-l-2 border-l-red-500/70 border-r-[#221d35] border-t-[#221d35] border-b-[#221d35]";
-                } else if (parsed.priority === "medium") {
-                   borderStyle = "border-l-2 border-l-amber-500/70 border-r-[#221d35] border-t-[#221d35] border-b-[#221d35]";
-                } else if (parsed.priority === "low") {
-                   borderStyle = "border-l-2 border-l-[#3ab4f2]/70 border-r-[#221d35] border-t-[#221d35] border-b-[#221d35]";
+              {sortGoals(userState.tomorrowGoals).map(tg => {
+                let borderStyle = tg.done ? "border-[#6fcf9733] opacity-60" : "border-[#221d35]";
+                if (!tg.done && tg.lightning) {
+                  borderStyle = "border-l-2 border-l-yellow-400/80 border-r-[#221d35] border-t-[#221d35] border-b-[#221d35] bg-[#1c162f]";
                 }
 
                 return (
                   <motion.div
                     key={tg.id}
+                    layoutId={tg.id}
                     initial={{ opacity: 0, y: 5 }}
                     animate={{ opacity: 1, y: 0 }}
                     exit={{ opacity: 0, scale: 0.95 }}
-                    className={`flex items-center gap-3 bg-[#17132a] border rounded-xl px-3 py-2 ${borderStyle}`}
+                    draggable={true}
+                    onDragStart={(e) => {
+                      e.dataTransfer.setData("text/plain", JSON.stringify({ id: tg.id, fromList: "tomorrow" }));
+                    }}
+                    className={`flex items-center gap-3 bg-[#17132a] border rounded-xl px-3 py-2 cursor-grab active:cursor-grabbing hover:bg-[#1c1833] transition-colors select-none ${borderStyle}`}
                   >
                     <div className="w-4 h-4 rounded border border-[#2e2845] bg-transparent flex-shrink-0" />
-                    <span className="flex-grow text-xs font-mono text-[#6b6485] flex flex-wrap items-center gap-1.5">
-                      <span>{parsed.text}</span>
-                      {parsed.priority && (
-                        <span className={`text-[6.5px] leading-none px-1 py-0.5 rounded font-bold tracking-wide uppercase shrink-0 font-mono ${
-                          parsed.priority === "high" ? "bg-red-950/20 text-red-500/60 border border-red-500/10" :
-                          parsed.priority === "medium" ? "bg-amber-950/20 text-amber-500/60 border border-amber-500/10" :
-                          "bg-blue-950/20 text-blue-400/60 border border-blue-500/10"
-                        }`}>
-                          {parsed.priority === "high" ? "🚨 Core" : parsed.priority === "medium" ? "⚡ Split" : "⚙️ Minor"}
-                        </span>
-                      )}
-                    </span>
+                    <div className="flex-grow flex flex-col gap-1 min-w-0">
+                      <span className="text-xs font-mono text-[#6b6485] truncate">
+                        {tg.text}
+                      </span>
+                    </div>
+
+                    {/* Lightning bolt indicator/button */}
+                    <button
+                      type="button"
+                      onClick={() => onToggleLightningGoal?.(tg.id, false)}
+                      className={`text-xs p-1 rounded-md hover:bg-[#20193b] transition-all cursor-pointer ${
+                        tg.lightning 
+                          ? "text-yellow-400 drop-shadow-[0_0_5px_rgba(250,204,21,0.6)] font-bold scale-110" 
+                          : "text-[#3d3657] hover:text-[#5d5478]"
+                      }`}
+                      title={tg.lightning ? "Remove energy priority" : "Mark as high energy priority"}
+                    >
+                      ⚡
+                    </button>
+
                     <button
                       onClick={() => onRemoveTomorrowGoal(tg.id)}
-                      className="text-base text-[#2e2845] hover:text-[#9180c4] transition-all cursor-pointer"
+                      className="text-base text-[#2e2845] hover:text-[#ff5d5d] hover:scale-110 transition-all cursor-pointer h-5 leading-none"
                     >
                       ×
                     </button>

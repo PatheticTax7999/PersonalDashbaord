@@ -1,8 +1,8 @@
 import { useState, useEffect } from "react";
 import { auth, db, provider, handleFirestoreError, OperationType } from "./firebase";
-import { signInWithPopup, signOut, onAuthStateChanged } from "firebase/auth";
+import { signInWithPopup, signOut, onAuthStateChanged, GoogleAuthProvider } from "firebase/auth";
 import { doc, setDoc, onSnapshot } from "firebase/firestore";
-import { UserState, ActiveWorkout, Routine, Exercise, CalendarEvent } from "./types";
+import { UserState, ActiveWorkout, Routine, Exercise, CalendarEvent, Goal, WaterConfig } from "./types";
 import { motion, AnimatePresence } from "motion/react";
 
 // Import layout tabs
@@ -36,7 +36,23 @@ const defaultState = (): UserState => ({
   weightLog: [],
   useLb: false,
   notificationsEnabled: true,
-  completedWorkouts: []
+  completedWorkouts: [],
+  taskStreak: 0,
+  lastStreakCompletedDate: null,
+  waterConfig: {
+    containerType: "glass",
+    capacity: 250,
+    capacityUnit: "ml",
+    creatineEnabled: false,
+    creatineAmount: 5,
+    stimulantsEnabled: false,
+    stimulantsAmount: 150,
+    height: 175,
+    weight: 75,
+    age: 28,
+    aiExplanation: "Proper hydration sustains metabolic speed, supports muscular protein synthesis during training, and coordinates electrolyte saturation for optimal nerve transmission.",
+    calculatedGoalMl: 2000
+  }
 });
 
 export default function App() {
@@ -66,7 +82,11 @@ export default function App() {
     const cachedData = localStorage.getItem("life_dashboard_user_state");
     if (cachedData) {
       try {
-        return JSON.parse(cachedData);
+        const parsed = JSON.parse(cachedData);
+        return {
+          ...defaultState(),
+          ...parsed
+        };
       } catch (e) {
         return defaultState();
       }
@@ -265,7 +285,24 @@ export default function App() {
       const cachedData = localStorage.getItem("life_dashboard_guest_user_state");
       if (cachedData) {
         try {
-          setUserState(JSON.parse(cachedData));
+          const parsed = JSON.parse(cachedData);
+          const today = new Date().toDateString();
+          let state = { ...defaultState(), ...parsed };
+          if (state.lastDate && state.lastDate !== today) {
+            let finalTaskStreak = state.taskStreak ?? 0;
+            if (state.lastStreakCompletedDate !== state.lastDate) {
+              finalTaskStreak = 0;
+            }
+            state.todayGoals = [
+              ...(state.todayGoals || []).filter((g: any) => !g.done),
+              ...(state.tomorrowGoals || []).map((g: any) => ({ ...g, done: false }))
+            ];
+            state.tomorrowGoals = [];
+            state.lastDate = today;
+            state.taskStreak = finalTaskStreak;
+            localStorage.setItem("life_dashboard_guest_user_state", JSON.stringify(state));
+          }
+          setUserState(state);
           return;
         } catch (e) {}
       }
@@ -283,7 +320,12 @@ export default function App() {
         let updatedLastDate = d.lastDate || today;
 
         // Carry-over tasks checklist at midnight rollover
-        if (d.lastDate && d.lastDate !== today && d.tomorrowGoals?.length) {
+        if (d.lastDate && d.lastDate !== today) {
+          let finalTaskStreak = d.taskStreak ?? 0;
+          if (d.lastStreakCompletedDate !== d.lastDate) {
+            finalTaskStreak = 0;
+          }
+
           updatedGoals = [
             ...(d.todayGoals || []).filter((g: any) => !g.done),
             ...(d.tomorrowGoals || []).map((g: any) => ({ ...g, done: false }))
@@ -296,13 +338,15 @@ export default function App() {
             ...d,
             todayGoals: updatedGoals,
             tomorrowGoals: updatedTomorrow,
-            lastDate: updatedLastDate
+            lastDate: updatedLastDate,
+            taskStreak: finalTaskStreak
           }).catch(err => {
             handleFirestoreError(err, OperationType.WRITE, `users/${user.uid}`);
           });
         }
 
         const fetched: UserState = {
+          ...defaultState(),
           todayGoals: updatedGoals,
           tomorrowGoals: updatedTomorrow,
           lastDate: updatedLastDate,
@@ -311,11 +355,14 @@ export default function App() {
           supplements: d.supplements || [],
           suppChecks: d.suppChecks || {},
           waterGoal: d.waterGoal ?? 2000,
-          waterUnit: d.waterUnit || "ml",
+          waterUnit: (d.waterUnit === "ml" || d.waterUnit === "oz") ? "glass" : (d.waterUnit || "glass"),
           waterLog: d.waterLog || {},
           weightLog: d.weightLog || [],
           useLb: d.useLb || false,
-          completedWorkouts: d.completedWorkouts || []
+          completedWorkouts: d.completedWorkouts || [],
+          waterConfig: d.waterConfig || defaultState().waterConfig,
+          taskStreak: d.taskStreak ?? 0,
+          lastStreakCompletedDate: d.lastStreakCompletedDate || null
         };
 
         setUserState(fetched);
@@ -336,35 +383,39 @@ export default function App() {
   }, [user?.uid]);
 
   // Google Calendar Connection launcher
-  const connectGcal = () => {
-    if (!(window as any).google?.accounts?.oauth2) {
-      alert("Calendar libraries are still initializing, please try again in a moment!");
-      return;
-    }
-    const tokenClient = (window as any).google.accounts.oauth2.initTokenClient({
-      client_id: "124339449156-61291qfr8vbktbsqj7rk5qq7qq5nsohg.apps.googleusercontent.com",
-      scope: "https://www.googleapis.com/auth/calendar.readonly",
-      callback: (resp: any) => {
-        if (resp.error) {
-          setGcalError("Interactive access was denied by user.");
-          return;
-        }
-        const token = resp.access_token;
-        const expiry = Date.now() + (resp.expires_in || 3600) * 1000;
-        
-        setGcalAccessToken(token);
-        setGcalError(null);
-
-        // Persist token in cookie and localStorage
-        localStorage.setItem("gcal_token", token);
-        localStorage.setItem("gcal_token_expiry", expiry.toString());
-        document.cookie = `gcal_token=${token}; max-age=2592000; path=/`;
-
-        fetchGCalEvents(token);
+  const connectGcal = async () => {
+    setGcalLoading(true);
+    setGcalError(null);
+    try {
+      // Use Firebase Auth signInWithPopup to get the token directly!
+      const result = await signInWithPopup(auth, provider);
+      const credential = GoogleAuthProvider.credentialFromResult(result);
+      if (!credential?.accessToken) {
+        throw new Error("Could not retrieve access token from Google sign-in. Make sure you complete the authentication.");
       }
-    });
+      const token = credential.accessToken;
+      // Access tokens are typically valid for 1 hour (3600 seconds)
+      const expiry = Date.now() + 3600 * 1000;
 
-    tokenClient.requestAccessToken({ prompt: "" });
+      setGcalAccessToken(token);
+      setGcalError(null);
+
+      // Persist token in cookie and localStorage
+      localStorage.setItem("gcal_token", token);
+      localStorage.setItem("gcal_token_expiry", expiry.toString());
+      document.cookie = `gcal_token=${token}; max-age=2592000; path=/`;
+
+      await fetchGCalEvents(token);
+    } catch (err: any) {
+      console.error("Popup login missed/denied:", err);
+      if (err.code === "auth/popup-blocked") {
+        setGcalError("Popup was blocked by your browser. Please allow popups for this site and try again.");
+      } else {
+        setGcalError(err.message || "Interactive access was denied or cancelled.");
+      }
+    } finally {
+      setGcalLoading(false);
+    }
   };
 
   const disconnectGcal = () => {
@@ -388,10 +439,12 @@ export default function App() {
     setGcalError(null);
     try {
       const now = new Date();
-      const s = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
-      const e = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59).toISOString();
+      const startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 30);
+      const endDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 60);
+      const s = startDate.toISOString();
+      const e = endDate.toISOString();
       
-      const url = `https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${encodeURIComponent(s)}&timeMax=${encodeURIComponent(e)}&singleEvents=true&orderBy=startTime&maxResults=50`;
+      const url = `https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${encodeURIComponent(s)}&timeMax=${encodeURIComponent(e)}&singleEvents=true&orderBy=startTime&maxResults=250`;
       
       const res = await fetch(url, {
         headers: { Authorization: `Bearer ${token}` }
@@ -400,6 +453,15 @@ export default function App() {
         if (res.status === 401) {
           disconnectGcal();
           setGcalError("Connection session expired. Please reconnect.");
+        } else if (res.status === 403) {
+          let detailedMsg = "Access Forbidden (403): Ensure the 'Google Calendar API' is enabled in your Google Cloud Console for this project and your email is added to 'Test Users'.";
+          try {
+            const errData = await res.json();
+            if (errData?.error?.message) {
+              detailedMsg = `Google API Error (403): ${errData.error.message}`;
+            }
+          } catch (e) {}
+          setGcalError(detailedMsg);
         } else {
           setGcalError(`Google Calendar error response (${res.status}).`);
         }
@@ -454,36 +516,57 @@ export default function App() {
     });
   };
 
+  const evaluateStreak = (copy: UserState): UserState => {
+    const today = new Date().toDateString();
+    const allDone = copy.todayGoals.length > 0 && copy.todayGoals.every(g => g.done);
+    
+    if (allDone) {
+      if (copy.lastStreakCompletedDate !== today) {
+        copy.taskStreak = (copy.taskStreak || 0) + 1;
+        copy.lastStreakCompletedDate = today;
+      }
+    } else {
+      if (copy.lastStreakCompletedDate === today) {
+        copy.taskStreak = Math.max(0, (copy.taskStreak || 1) - 1);
+        copy.lastStreakCompletedDate = null;
+      }
+    }
+    return copy;
+  };
+
   // Global triggers inside tabs
   const handleToggleGoal = (id: string) => {
-    const copy = { ...userState };
+    let copy = { ...userState };
     copy.todayGoals = copy.todayGoals.map(g => (g.id === id ? { ...g, done: !g.done } : g));
+    copy = evaluateStreak(copy);
     setUserState(copy);
     updateFirestore(copy);
   };
 
-  const handleAddTodayGoal = (text: string) => {
-    const copy = { ...userState };
+  const handleAddTodayGoal = (text: string, priority?: "high" | "medium" | "low") => {
+    let copy = { ...userState };
     copy.todayGoals = [
       ...copy.todayGoals,
-      { id: Math.random().toString(36).slice(2, 9), text, done: false }
+      { id: Math.random().toString(36).slice(2, 9), text, done: false, lightning: false }
     ];
+    copy = evaluateStreak(copy);
     setUserState(copy);
     updateFirestore(copy);
   };
 
   const handleRemoveTodayGoal = (id: string) => {
-    const copy = { ...userState };
+    let copy = { ...userState };
     copy.todayGoals = copy.todayGoals.filter(g => g.id !== id);
+    copy = evaluateStreak(copy);
     setUserState(copy);
     updateFirestore(copy);
   };
 
-  const handleAddTomorrowGoal = (text: string) => {
+  const handleAddTomorrowGoal = (text: string, priority?: "high" | "medium" | "low") => {
     const copy = { ...userState };
     copy.tomorrowGoals = [
       ...copy.tomorrowGoals,
-      { id: Math.random().toString(36).slice(2, 9), text, done: false }
+      { id: Math.random().toString(36).slice(2, 9), text, done: false, lightning: false }
     ];
     setUserState(copy);
     updateFirestore(copy);
@@ -492,6 +575,55 @@ export default function App() {
   const handleRemoveTomorrowGoal = (id: string) => {
     const copy = { ...userState };
     copy.tomorrowGoals = copy.tomorrowGoals.filter(tg => tg.id !== id);
+    setUserState(copy);
+    updateFirestore(copy);
+  };
+
+  const handleToggleLightningGoal = (id: string, isToday: boolean) => {
+    const copy = { ...userState };
+    if (isToday) {
+      copy.todayGoals = copy.todayGoals.map(g => (g.id === id ? { ...g, lightning: !g.lightning } : g));
+    } else {
+      copy.tomorrowGoals = copy.tomorrowGoals.map(g => (g.id === id ? { ...g, lightning: !g.lightning } : g));
+    }
+    setUserState(copy);
+    updateFirestore(copy);
+  };
+
+  const handleMoveActiveToTomorrow = () => {
+    let copy = { ...userState };
+    const activeTasks = copy.todayGoals.filter(g => !g.done);
+    const completedTasks = copy.todayGoals.filter(g => g.done);
+
+    copy.tomorrowGoals = [...copy.tomorrowGoals, ...activeTasks];
+    copy.todayGoals = completedTasks;
+    copy = evaluateStreak(copy);
+
+    setUserState(copy);
+    updateFirestore(copy);
+  };
+
+  const handleMoveGoal = (id: string, fromList: "today" | "tomorrow", toList: "today" | "tomorrow") => {
+    if (fromList === toList) return;
+    let copy = { ...userState };
+    let movedGoal: Goal | undefined;
+
+    if (fromList === "today") {
+      movedGoal = copy.todayGoals.find(g => g.id === id);
+      copy.todayGoals = copy.todayGoals.filter(g => g.id !== id);
+    } else {
+      movedGoal = copy.tomorrowGoals.find(g => g.id === id);
+      copy.tomorrowGoals = copy.tomorrowGoals.filter(g => g.id !== id);
+    }
+
+    if (movedGoal) {
+      if (toList === "today") {
+        copy.todayGoals = [...copy.todayGoals, movedGoal];
+      } else {
+        copy.tomorrowGoals = [...copy.tomorrowGoals, movedGoal];
+      }
+    }
+    copy = evaluateStreak(copy);
     setUserState(copy);
     updateFirestore(copy);
   };
@@ -540,12 +672,26 @@ export default function App() {
     updateFirestore(copy);
   };
 
-  const handleLogWater = (idx: number) => {
+  const handleLogWater = (action: "increment" | "decrement") => {
     const today = new Date().toISOString().slice(0, 10);
     const copy = { ...userState };
     const current = copy.waterLog[today] || 0;
-    // Toggle log idx
-    copy.waterLog[today] = idx < current ? idx : idx + 1;
+    if (action === "increment") {
+      copy.waterLog[today] = current + 1;
+    } else {
+      copy.waterLog[today] = Math.max(0, current - 1);
+    }
+    setUserState(copy);
+    updateFirestore(copy);
+  };
+
+  const handleUpdateWaterConfig = (config: WaterConfig) => {
+    const copy = {
+      ...userState,
+      waterConfig: config,
+      waterGoal: config.calculatedGoalMl || userState.waterGoal,
+      waterUnit: config.containerType
+    };
     setUserState(copy);
     updateFirestore(copy);
   };
@@ -818,6 +964,9 @@ export default function App() {
                 onAddTomorrowGoal={handleAddTomorrowGoal}
                 onRemoveTomorrowGoal={handleRemoveTomorrowGoal}
                 onToggleSuppCheck={handleToggleSuppCheck}
+                onToggleLightningGoal={handleToggleLightningGoal}
+                onMoveActiveToTomorrow={handleMoveActiveToTomorrow}
+                onMoveGoal={handleMoveGoal}
               />
             )}
 
@@ -850,6 +999,7 @@ export default function App() {
                 onTriggerTestNotification={handleTriggerTestNotification}
                 onLogWeight={handleLogWeight}
                 onRemoveWeight={handleRemoveWeight}
+                onUpdateWaterConfig={handleUpdateWaterConfig}
               />
             )}
 
@@ -857,7 +1007,12 @@ export default function App() {
               <CalendarTab
                 userState={userState}
                 gcalAccessToken={gcalAccessToken}
+                gcalEvents={gcalEvents}
+                gcalLoading={gcalLoading}
+                gcalError={gcalError}
                 onConnectGcal={connectGcal}
+                onDisconnectGcal={disconnectGcal}
+                onRefreshGcal={() => gcalAccessToken && fetchGCalEvents(gcalAccessToken)}
                 onToggleGoal={handleToggleGoal}
                 onToggleSuppCheck={handleToggleSuppCheck}
               />

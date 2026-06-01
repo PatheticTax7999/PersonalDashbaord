@@ -11,7 +11,12 @@ const TIME_SLOTS = [
 interface CalendarTabProps {
   userState: UserState;
   gcalAccessToken: string | null;
+  gcalEvents: CalendarEvent[];
+  gcalLoading: boolean;
+  gcalError: string | null;
   onConnectGcal: () => void;
+  onDisconnectGcal: () => void;
+  onRefreshGcal: () => void;
   onToggleGoal: (id: string) => void;
   onToggleSuppCheck: (suppId: string, slotKey: string) => void;
 }
@@ -19,7 +24,12 @@ interface CalendarTabProps {
 export default function CalendarTab({
   userState,
   gcalAccessToken,
+  gcalEvents = [],
+  gcalLoading,
+  gcalError,
   onConnectGcal,
+  onDisconnectGcal,
+  onRefreshGcal,
   onToggleGoal,
   onToggleSuppCheck
 }: CalendarTabProps) {
@@ -31,6 +41,7 @@ export default function CalendarTab({
 
   const [calShowGoals, setCalShowGoals] = useState(true);
   const [calShowSupps, setCalShowSupps] = useState(true);
+  const [calShowEvents, setCalShowEvents] = useState(true);
 
   const todayStr = new Date().toISOString().slice(0, 10);
 
@@ -114,7 +125,13 @@ export default function CalendarTab({
     // Filter completed workouts
     const workoutsList = (userState.completedWorkouts || []).filter(w => w.date === dk);
 
-    const hasContent = goalsList.length > 0 || suppSlots.length > 0 || workoutsList.length > 0;
+    // Filter calendar events
+    const dayEvents = calShowEvents ? gcalEvents.filter(ev => {
+      const startStr = ev.start?.dateTime || ev.start?.date;
+      return startStr && startStr.slice(0, 10) === dk;
+    }) : [];
+
+    const hasContent = goalsList.length > 0 || suppSlots.length > 0 || workoutsList.length > 0 || dayEvents.length > 0;
 
     return (
       <div className="border-t border-[#221d35] pt-4.5">
@@ -134,6 +151,39 @@ export default function CalendarTab({
           </div>
         ) : (
           <div className="space-y-2">
+            {/* Display Google Calendar Events */}
+            {dayEvents.map((ev, evIdx) => {
+              const isAllDay = !ev.start?.dateTime;
+              const timeStr = isAllDay ? "All day" : (() => {
+                const s = new Date(ev.start.dateTime!);
+                const e = new Date(ev.end.dateTime || "");
+                const fmt = (date: Date) => date.toLocaleTimeString("en-AU", { hour: "2-digit", minute: "2-digit" });
+                return `${fmt(s)} – ${fmt(e)}`;
+              })();
+              
+              return (
+                <div
+                  key={`day-ev-${ev.id}-${evIdx}`}
+                  className="flex gap-3 items-start p-3.5 bg-[#17142a] border border-[#4285F4]/25 rounded-xl"
+                >
+                  <div className="w-14 text-right font-mono text-[9px] text-[#4285F4] leading-snug shrink-0">
+                    {timeStr}
+                  </div>
+                  <div className="flex-1 min-w-0 text-left">
+                    <div className="font-mono text-xs text-[#e8e3f8] truncate">
+                      {ev.summary || "(No Title)"}
+                    </div>
+                    {ev.location && (
+                      <div className="text-[9px] text-[#3d3657] font-mono mt-1 truncate">
+                        📍 {ev.location}
+                      </div>
+                    )}
+                  </div>
+                  <div className="w-1 rounded-sm bg-[#4285F4] self-stretch min-h-5" />
+                </div>
+              );
+            })}
+
             {/* Display Goals */}
             {goalsList.map(g => (
               <div
@@ -271,13 +321,29 @@ export default function CalendarTab({
           </span>
         </div>
 
-        {!gcalAccessToken && (
+        {!gcalAccessToken ? (
           <button
             onClick={onConnectGcal}
             className="bg-gradient-to-r from-[#4285F4] to-[#1a6fd4] border-none text-white rounded-lg px-3 py-1.5 text-[10px] font-mono font-semibold cursor-pointer active:scale-95 shadow"
           >
             Connect Calendar
           </button>
+        ) : (
+          <div className="flex gap-1.5">
+            <button
+              onClick={onRefreshGcal}
+              disabled={gcalLoading}
+              className="bg-[#17142a] border border-[#221d35] text-[#9991b8] rounded-lg px-2.5 py-1 text-[10px] font-mono font-semibold cursor-pointer active:scale-95 hover:border-[#f0c972] disabled:opacity-50"
+            >
+              {gcalLoading ? "Syncing..." : "🔄 Refresh"}
+            </button>
+            <button
+              onClick={onDisconnectGcal}
+              className="bg-transparent border border-[#221d35] rounded-lg px-2 py-1 text-[9px] font-mono text-[#3d3657] hover:text-red-400 active:scale-95 transition-all cursor-pointer animate-fade-in"
+            >
+              Disconnect
+            </button>
+          </div>
         )}
       </div>
 
@@ -312,24 +378,45 @@ export default function CalendarTab({
       </div>
 
       {/* Filter checkboxes */}
-      <div className="grid grid-cols-2 gap-2 mt-0.5 font-mono text-[10px]">
+      <div className="grid grid-cols-3 gap-1.5 mt-0.5 font-mono text-[9px]">
         <button
           onClick={() => setCalShowGoals(!calShowGoals)}
-          className={`py-2 px-3 border rounded-xl flex items-center justify-center gap-1.5 cursor-pointer select-none transition-all ${
+          className={`py-2 px-1 border rounded-xl flex items-center justify-center gap-1 cursor-pointer select-none transition-all ${
             calShowGoals ? "border-[#6fcf97] bg-[#6fcf9715] text-[#6fcf97]" : "border-[#221d35] text-[#3d3657]"
           }`}
         >
-          {calShowGoals ? "✓" : "○"} Daily Goals
+          {calShowGoals ? "✓" : "○"} Goals
         </button>
         <button
           onClick={() => setCalShowSupps(!calShowSupps)}
-          className={`py-2 px-3 border rounded-xl flex items-center justify-center gap-1.5 cursor-pointer select-none transition-all ${
+          className={`py-2 px-1 border rounded-xl flex items-center justify-center gap-1 cursor-pointer select-none transition-all ${
             calShowSupps ? "border-[#f0c972] bg-[#f0c97210] text-[#f0c972]" : "border-[#221d35] text-[#3d3657]"
           }`}
         >
-          {calShowSupps ? "✓" : "○"} Supplements
+          {calShowSupps ? "✓" : "○"} Supps
+        </button>
+        <button
+          onClick={() => setCalShowEvents(!calShowEvents)}
+          className={`py-2 px-1 border rounded-xl flex items-center justify-center gap-1 cursor-pointer select-none transition-all ${
+            calShowEvents ? "border-[#4285F4] bg-[#4285F415] text-[#4285F4]" : "border-[#221d35] text-[#3d3657]"
+          }`}
+        >
+          {calShowEvents ? "✓" : "○"} Events
         </button>
       </div>
+
+      {gcalLoading && (
+        <div className="flex items-center gap-2.5 justify-center py-3 text-[10px] text-[#9991b8] font-mono bg-[#13111f] border border-[#2a2440] rounded-xl animate-pulse">
+          <div className="w-3.5 h-3.5 border-2 border-[#4285F4] border-t-transparent rounded-full animate-spin" />
+          Syncing events with cloud…
+        </div>
+      )}
+
+      {gcalError && (
+        <div className="bg-[#ff444412] border border-[#ff444422] rounded-xl p-2.5 text-[10px] text-red-400 font-mono text-center">
+          🚨 {gcalError}
+        </div>
+      )}
 
       {/* Step navigations */}
       <div className="flex justify-between items-center bg-[#13111f] border border-[#221d35] p-3 rounded-2xl shadow-sm">
@@ -379,6 +466,10 @@ export default function CalendarTab({
           const hasSupps = calShowSupps && isToday && userState.supplements.length > 0;
           const dayWorkouts = (userState.completedWorkouts || []).filter(w => w.date === key);
           const hasWorkouts = dayWorkouts.length > 0;
+          const hasEvents = calShowEvents && gcalEvents.some(ev => {
+            const startStr = ev.start?.dateTime || ev.start?.date;
+            return startStr && startStr.slice(0, 10) === key;
+          });
 
           return (
             <div
@@ -405,6 +496,7 @@ export default function CalendarTab({
 
               {/* Indicator dots inside calendar grids */}
               <div className="flex gap-0.5 justify-center mt-1">
+                {hasEvents && <div className="w-1 h-1 rounded-full bg-[#4285F4]" />}
                 {hasGoals && <div className="w-1 h-1 rounded-full bg-[#6fcf97]" />}
                 {hasSupps && <div className="w-1 h-1 rounded-full bg-[#f0c972]" />}
                 {hasWorkouts && <div className="w-1 h-1 rounded-full bg-orange-400" />}

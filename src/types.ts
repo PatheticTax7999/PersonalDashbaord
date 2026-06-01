@@ -2,6 +2,8 @@ export interface Goal {
   id: string;
   text: string;
   done: boolean;
+  priority?: "high" | "medium" | "low";
+  lightning?: boolean;
 }
 
 export interface Exercise {
@@ -55,6 +57,21 @@ export interface CompletedWorkout {
   exercises: { name: string; setsCount: number; maxWeight: number; reps: number }[];
 }
 
+export interface WaterConfig {
+  height?: number; // cm
+  weight?: number; // kg
+  age?: number; // years
+  containerType: "bottle" | "glass";
+  capacity: number; // capacity value, e.g. 500, 1, 24
+  capacityUnit: "ml" | "lt" | "oz";
+  creatineEnabled: boolean;
+  creatineAmount: number; // grams
+  stimulantsEnabled: boolean;
+  stimulantsAmount: number; // mg caffeine
+  aiExplanation?: string;
+  calculatedGoalMl?: number; // ml daily goal
+}
+
 export interface UserState {
   todayGoals: Goal[];
   tomorrowGoals: Goal[];
@@ -70,6 +87,9 @@ export interface UserState {
   useLb: boolean;
   notificationsEnabled?: boolean;
   completedWorkouts?: CompletedWorkout[];
+  waterConfig?: WaterConfig;
+  taskStreak?: number;
+  lastStreakCompletedDate?: string | null;
 }
 
 export interface CalendarEvent {

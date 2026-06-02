@@ -253,6 +253,99 @@ Return ONLY a valid raw JSON object. Do not wrap in markdown or code blocks. Str
     }
   });
 
+  // API router for Food Barcode Lookup from OpenFoodFacts
+  app.get("/api/food/barcode/:barcode", async (req, res) => {
+    try {
+      const { barcode } = req.params;
+      if (!barcode || !/^\d+$/.test(barcode)) {
+        return res.status(400).json({ error: "Invalid barcode format. It must contain only numeric digits." });
+      }
+
+      console.log(`[Food API] Barcode lookup from OpenFoodFacts for: ${barcode}`);
+      const response = await fetch(`https://world.openfoodfacts.org/api/v2/product/${barcode}.json`, {
+        headers: { "User-Agent": "life-dashboard-ai-studio - Web - Version 1.0" }
+      });
+      if (!response.ok) {
+        return res.status(response.status).json({ error: `OpenFoodFacts returned error status ${response.status}` });
+      }
+      
+      const data = await response.json();
+      if (data.status === 1 || data.status_verbose === "product found") {
+        const product = data.product || {};
+        const nutriments = product.nutriments || {};
+        
+        // Extract basic macros per 100g or per serving size
+        const pName = product.product_name || product.product_name_en || "Unknown Food Product";
+        const brand = product.brands || "Generic Brand";
+        const cals = typeof nutriments["energy-kcal_100g"] === "number" ? Math.round(nutriments["energy-kcal_100g"]) : Math.round(nutriments["energy-kcal_serving"] || nutriments["energy-kcal"] || 0);
+        const prot = typeof nutriments.proteins_100g === "number" ? parseFloat(nutriments.proteins_100g.toFixed(1)) : parseFloat((nutriments.proteins_serving || nutriments.proteins || 0).toFixed(1));
+        const carb = typeof nutriments.carbohydrates_100g === "number" ? parseFloat(nutriments.carbohydrates_100g.toFixed(1)) : parseFloat((nutriments.carbohydrates_serving || nutriments.carbohydrates || 0).toFixed(1));
+        const fatVal = typeof nutriments.fat_100g === "number" ? parseFloat(nutriments.fat_100g.toFixed(1)) : parseFloat((nutriments.fat_serving || nutriments.fat || 0).toFixed(1));
+
+        res.json({
+          found: true,
+          product: {
+            name: pName,
+            brand: brand,
+            calories: cals,
+            protein: prot,
+            carbs: carb,
+            fat: fatVal,
+            barcode,
+            imageUrl: product.image_front_thumb_url || product.image_thumb_url || ""
+          }
+        });
+      } else {
+        res.json({ found: false, error: "Product not found in OpenFoodFacts database." });
+      }
+    } catch (err: any) {
+      console.error("Barcode Lookup API Error:", err);
+      res.status(500).json({ error: "Failed to query food database: " + err.message });
+    }
+  });
+
+  // API router for Food Keyword Search from OpenFoodFacts
+  app.get("/api/food/search", async (req, res) => {
+    try {
+      const query = req.query.q;
+      if (!query || typeof query !== "string") {
+        return res.status(400).json({ error: "Search query 'q' is required." });
+      }
+
+      console.log(`[Food API] Search keywords in OpenFoodFacts for: "${query}"`);
+      const url = `https://world.openfoodfacts.org/cgi/search.pl?search_terms=${encodeURIComponent(query)}&search_simple=1&action=process&json=1&page_size=15`;
+      const response = await fetch(url, {
+        headers: { "User-Agent": "life-dashboard-ai-studio - Web - Version 1.0" }
+      });
+      if (!response.ok) {
+        return res.status(response.status).json({ error: `OpenFoodFacts returned error status ${response.status}` });
+      }
+
+      const data = await response.json();
+      const products = data.products || [];
+      const results = products
+        .filter((p: any) => p.product_name || p.product_name_en)
+        .map((product: any) => {
+          const nutriments = product.nutriments || {};
+          return {
+            name: product.product_name || product.product_name_en || "Unknown Food Product",
+            brand: product.brands || "Generic Brand",
+            calories: typeof nutriments["energy-kcal_100g"] === "number" ? Math.round(nutriments["energy-kcal_100g"]) : Math.round(nutriments["energy-kcal_serving"] || nutriments["energy-kcal"] || 0),
+            protein: typeof nutriments.proteins_100g === "number" ? parseFloat(nutriments.proteins_100g.toFixed(1)) : parseFloat((nutriments.proteins_serving || nutriments.proteins || 0).toFixed(1)),
+            carbs: typeof nutriments.carbohydrates_100g === "number" ? parseFloat(nutriments.carbohydrates_100g.toFixed(1)) : parseFloat((nutriments.carbohydrates_serving || nutriments.carbohydrates || 0).toFixed(1)),
+            fat: typeof nutriments.fat_100g === "number" ? parseFloat(nutriments.fat_100g.toFixed(1)) : parseFloat((nutriments.fat_serving || nutriments.fat || 0).toFixed(1)),
+            barcode: product.code || "",
+            imageUrl: product.image_front_thumb_url || product.image_thumb_url || ""
+          };
+        });
+
+      res.json({ results });
+    } catch (err: any) {
+      console.error("Food Search API Error:", err);
+      res.status(500).json({ error: "Failed to query food database: " + err.message });
+    }
+  });
+
   // Hot Module Replacement/development or production mode serving
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({

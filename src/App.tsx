@@ -2,8 +2,9 @@ import { useState, useEffect } from "react";
 import { auth, db, provider, handleFirestoreError, OperationType } from "./firebase";
 import { signInWithPopup, signOut, onAuthStateChanged, GoogleAuthProvider } from "firebase/auth";
 import { doc, setDoc, onSnapshot } from "firebase/firestore";
-import { UserState, ActiveWorkout, Routine, Exercise, CalendarEvent, Goal, WaterConfig } from "./types";
+import { UserState, ActiveWorkout, Routine, Exercise, CalendarEvent, Goal, WaterConfig, FoodLogEntry } from "./types";
 import { motion, AnimatePresence } from "motion/react";
+import { Html5Qrcode } from "html5-qrcode";
 
 // Import layout tabs
 import HomeTab from "./components/HomeTab";
@@ -39,6 +40,11 @@ const defaultState = (): UserState => ({
   completedWorkouts: [],
   taskStreak: 0,
   lastStreakCompletedDate: null,
+  calorieGoal: 2000,
+  proteinGoalPct: 30,
+  carbGoalPct: 40,
+  fatGoalPct: 30,
+  foodLog: {},
   waterConfig: {
     containerType: "glass",
     capacity: 250,
@@ -101,6 +107,18 @@ export default function App() {
   const [gcalError, setGcalError] = useState<string | null>(null);
   const [gsiScriptLoaded, setGsiScriptLoaded] = useState(false);
   const [authError, setAuthError] = useState<any | null>(null);
+
+  // Addition Modal and Plus FAB Submenu states
+  const [isAddMenuOpen, setIsAddMenuOpen] = useState(false);
+  const [activeAddModal, setActiveAddModal] = useState<"workout" | "food" | "water" | "goal" | null>(null);
+  const [foodTab, setFoodTab] = useState<"search" | "manual" | "scanner">("search");
+  const [foodSearchQuery, setFoodSearchQuery] = useState("");
+  const [foodSearchResults, setFoodSearchResults] = useState<any[]>([]);
+  const [isSearchingFood, setIsSearchingFood] = useState(false);
+  const [selectedFoodProduct, setSelectedFoodProduct] = useState<any | null>(null);
+  const [foodServingMultiplier, setFoodServingMultiplier] = useState(1);
+  const [scannedProductError, setScannedProductError] = useState("");
+  const [isBarcodeScanning, setIsBarcodeScanning] = useState(false);
 
   // Active training workout (with local storage caching for persistence across reload)
   const [activeWorkout, setActiveWorkout] = useState<ActiveWorkout | null>(() => {
@@ -362,7 +380,12 @@ export default function App() {
           completedWorkouts: d.completedWorkouts || [],
           waterConfig: d.waterConfig || defaultState().waterConfig,
           taskStreak: d.taskStreak ?? 0,
-          lastStreakCompletedDate: d.lastStreakCompletedDate || null
+          lastStreakCompletedDate: d.lastStreakCompletedDate || null,
+          calorieGoal: d.calorieGoal ?? defaultState().calorieGoal,
+          proteinGoalPct: d.proteinGoalPct ?? defaultState().proteinGoalPct,
+          carbGoalPct: d.carbGoalPct ?? defaultState().carbGoalPct,
+          fatGoalPct: d.fatGoalPct ?? defaultState().fatGoalPct,
+          foodLog: d.foodLog || {}
         };
 
         setUserState(fetched);
@@ -515,6 +538,139 @@ export default function App() {
       handleFirestoreError(err, OperationType.WRITE, `users/${user.uid}`);
     });
   };
+
+  const handleLogFood = (name: string, calories: number, protein: number, carbs: number, fat: number, barcode?: string, quantity: number = 1) => {
+    const today = new Date().toDateString();
+    const entry: FoodLogEntry = {
+      id: Math.random().toString(36).slice(2, 9),
+      name,
+      calories,
+      protein,
+      carbs,
+      fat,
+      quantity,
+      barcode: barcode || "",
+      loggedAt: new Date().toLocaleTimeString("en-AU", { hour: "2-digit", minute: "2-digit" })
+    };
+
+    const copy = { ...userState };
+    if (!copy.foodLog) copy.foodLog = {};
+    if (!copy.foodLog[today]) copy.foodLog[today] = [];
+    copy.foodLog[today] = [...copy.foodLog[today], entry];
+
+    setUserState(copy);
+    updateFirestore(copy);
+  };
+
+  const handleRemoveFood = (id: string) => {
+    const today = new Date().toDateString();
+    const copy = { ...userState };
+    if (copy.foodLog && copy.foodLog[today]) {
+      copy.foodLog[today] = copy.foodLog[today].filter(e => e.id !== id);
+      setUserState(copy);
+      updateFirestore(copy);
+    }
+  };
+
+  const handleUpdateCalorieTarget = (calorieGoal: number, proteinGoalPct: number, carbGoalPct: number, fatGoalPct: number) => {
+    const copy = {
+      ...userState,
+      calorieGoal,
+      proteinGoalPct,
+      carbGoalPct,
+      fatGoalPct
+    };
+    setUserState(copy);
+    updateFirestore(copy);
+  };
+
+  const handleFoodSearch = async (query: string) => {
+    if (!query.trim()) return;
+    setIsSearchingFood(true);
+    try {
+      const res = await fetch(`/api/food/search?q=${encodeURIComponent(query)}`);
+      if (res.ok) {
+        const data = await res.json();
+        setFoodSearchResults(data || []);
+      }
+    } catch (err) {
+      console.error("Food search error:", err);
+    } finally {
+      setIsSearchingFood(false);
+    }
+  };
+
+  const handleBarcodeLookup = async (barcode: string) => {
+    setScannedProductError("");
+    try {
+      const res = await fetch(`/api/food/barcode/${barcode}`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.found && data.product) {
+          setSelectedFoodProduct(data.product);
+          setFoodServingMultiplier(1);
+          setFoodTab("search"); // switch back to details card inside search tab!
+          return true;
+        } else {
+          setScannedProductError(data.error || "Product not found in database.");
+        }
+      } else {
+        setScannedProductError("Barcode lookup failed. Product not found.");
+      }
+    } catch (err) {
+      console.error("Barcode lookup error:", err);
+      setScannedProductError("Failed to lookup barcode.");
+    }
+    return false;
+  };
+
+  useEffect(() => {
+    if (activeAddModal !== "food" || foodTab !== "scanner") {
+      setIsBarcodeScanning(false);
+      return;
+    }
+
+    let html5QrcodeScanner: Html5Qrcode | null = null;
+    setIsBarcodeScanning(true);
+    setScannedProductError("");
+
+    const startScanner = async () => {
+      try {
+        await new Promise(resolve => setTimeout(resolve, 400));
+        const element = document.getElementById("applet-barcode-finder");
+        if (!element) return;
+
+        html5QrcodeScanner = new Html5Qrcode("applet-barcode-finder");
+        await html5QrcodeScanner.start(
+          { facingMode: "environment" },
+          {
+            fps: 10,
+            qrbox: { width: 250, height: 180 }
+          },
+          async (decodedText) => {
+            if (html5QrcodeScanner && html5QrcodeScanner.isScanning) {
+              await html5QrcodeScanner.stop();
+            }
+            setIsBarcodeScanning(false);
+            await handleBarcodeLookup(decodedText);
+          },
+          (errorMessage) => {}
+        );
+      } catch (err: any) {
+        console.error("Camera scanner startup failed:", err);
+        setScannedProductError("Could not access environment camera. Try typing manual query or check permissions.");
+        setIsBarcodeScanning(false);
+      }
+    };
+
+    startScanner();
+
+    return () => {
+      if (html5QrcodeScanner && html5QrcodeScanner.isScanning) {
+        html5QrcodeScanner.stop().catch(e => console.error("Scanner stop fail:", e));
+      }
+    };
+  }, [activeAddModal, foodTab]);
 
   const evaluateStreak = (copy: UserState): UserState => {
     const today = new Date().toDateString();
@@ -967,6 +1123,9 @@ export default function App() {
                 onToggleLightningGoal={handleToggleLightningGoal}
                 onMoveActiveToTomorrow={handleMoveActiveToTomorrow}
                 onMoveGoal={handleMoveGoal}
+                onLogFood={handleLogFood}
+                onRemoveFood={handleRemoveFood}
+                onUpdateCalorieTarget={handleUpdateCalorieTarget}
               />
             )}
 
@@ -1027,6 +1186,7 @@ export default function App() {
         onSaveRoutine={handleSaveRoutine}
         onAddTodayGoal={handleAddTodayGoal}
         onUpdateWaterGoal={handleUpdateWaterGoal}
+        onUpdateCalorieTarget={handleUpdateCalorieTarget}
         setActiveTab={setActiveTab}
       />
 
@@ -1220,6 +1380,527 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {/* Persistent global Floating Plus Button and sub-menus */}
+      <div className="fixed bottom-20 right-4 z-50 flex flex-col items-end gap-2">
+        <AnimatePresence>
+          {isAddMenuOpen && (
+            <motion.div
+              initial={{ opacity: 0, y: 15 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 15 }}
+              transition={{ duration: 0.18 }}
+              className="flex flex-col items-end gap-2 mb-2"
+            >
+              <button
+                onClick={() => {
+                  setActiveAddModal("workout");
+                  setIsAddMenuOpen(false);
+                }}
+                className="flex items-center gap-2 bg-[#17142a] border border-[#2a2440] hover:border-[#f0c972] text-[#e8e3f8] hover:text-[#f0c972] px-4 py-2 rounded-full font-mono text-xs font-bold transition-all shadow-lg hover:scale-105 active:scale-95 cursor-pointer"
+              >
+                <span>🏋️</span> Start Workout
+              </button>
+              <button
+                onClick={() => {
+                  setActiveAddModal("food");
+                  setFoodTab("search");
+                  setSelectedFoodProduct(null);
+                  setFoodSearchQuery("");
+                  setFoodSearchResults([]);
+                  setScannedProductError("");
+                  setIsAddMenuOpen(false);
+                }}
+                className="flex items-center gap-2 bg-[#17142a] border border-[#2a2440] hover:border-[#fbcfe8] text-[#e8e3f8] hover:text-[#fbcfe8] px-4 py-2 rounded-full font-mono text-xs font-bold transition-all shadow-lg hover:scale-105 active:scale-95 cursor-pointer"
+              >
+                <span>🍏</span> Add Food
+              </button>
+              <button
+                onClick={() => {
+                  setActiveAddModal("water");
+                  setIsAddMenuOpen(false);
+                }}
+                className="flex items-center gap-2 bg-[#17142a] border border-[#2a2440] hover:border-cyan-400 text-[#e8e3f8] hover:text-cyan-400 px-4 py-2 rounded-full font-mono text-xs font-bold transition-all shadow-lg hover:scale-105 active:scale-95 cursor-pointer"
+              >
+                <span>💧</span> Add Water
+              </button>
+              <button
+                onClick={() => {
+                  setActiveAddModal("goal");
+                  setIsAddMenuOpen(false);
+                }}
+                className="flex items-center gap-2 bg-[#17142a] border border-[#2a2440] hover:border-emerald-400 text-[#e8e3f8] hover:text-emerald-400 px-4 py-2 rounded-full font-mono text-xs font-bold transition-all shadow-lg hover:scale-105 active:scale-95 cursor-pointer"
+              >
+                <span>🎯</span> Add Goal
+              </button>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        <button
+          onClick={() => setIsAddMenuOpen(!isAddMenuOpen)}
+          className={`w-14 h-14 rounded-full flex items-center justify-center text-3xl font-light cursor-pointer shadow-lg transition-all duration-300 hover:scale-110 active:scale-95 text-white z-50 ${
+            isAddMenuOpen 
+              ? "bg-[#2a2440] rotate-45 border border-red-500/40" 
+              : "bg-gradient-to-r from-[#f0c972] to-[#e07b3f] hover:brightness-110"
+          }`}
+          title="Log health metrics"
+        >
+          +
+        </button>
+      </div>
+
+      {/* Global input Modals Layer */}
+      <AnimatePresence>
+        {activeAddModal && (
+          <div className="fixed inset-0 bg-[#0d0b14dd] backdrop-blur-md z-50 flex items-center justify-center p-4">
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              transition={{ duration: 0.2 }}
+              className="bg-[#13111f] border border-[#2a2440] rounded-3xl p-6 max-w-sm w-full shadow-2xl relative flex flex-col gap-4 text-left"
+            >
+              {/* Close Button top-right */}
+              <button 
+                onClick={() => setActiveAddModal(null)}
+                className="absolute top-4 right-4 text-gray-500 hover:text-white cursor-pointer p-1"
+              >
+                ✕
+              </button>
+
+              {/* MODAL 1: ADD GOAL */}
+              {activeAddModal === "goal" && (
+                <form onSubmit={(e) => {
+                  e.preventDefault();
+                  const form = e.currentTarget;
+                  const text = (form.elements.namedItem("goalText") as HTMLInputElement).value.trim();
+                  const targetDay = (form.elements.namedItem("goalDay") as HTMLSelectElement).value;
+                  if (text) {
+                    if (targetDay === "today") {
+                      handleAddTodayGoal(text);
+                    } else {
+                      handleAddTomorrowGoal(text);
+                    }
+                    setActiveAddModal(null);
+                  }
+                }} className="flex flex-col gap-4">
+                  <div>
+                    <span className="font-bebas text-2xl tracking-widest text-[#fbgold] text-[#f0c972]">Add Target Goal</span>
+                    <span className="block text-[8px] font-mono text-[#6b6485] uppercase tracking-wider mt-0.5">Define single milestone</span>
+                  </div>
+                  
+                  <div className="flex flex-col gap-1.5">
+                    <label className="text-[9.5px] font-mono text-[#9991b8] uppercase tracking-wider">Target Period</label>
+                    <select name="goalDay" className="bg-[#17142a] border border-[#2a2440] text-xs font-mono text-[#e8e3f8] rounded-xl p-2.5 focus:outline-none focus:border-[#f0c972] w-full">
+                      <option value="today">Today's List</option>
+                      <option value="tomorrow">Tomorrow's List</option>
+                    </select>
+                  </div>
+                  
+                  <div className="flex flex-col gap-1.5">
+                    <label className="text-[9.5px] font-mono text-[#9991b8] uppercase tracking-wider">Goal Description</label>
+                    <input required name="goalText" placeholder="e.g., Read for 30 minutes" className="bg-[#17142a] border border-[#2a2440] text-xs font-mono text-[#e8e3f8] placeholder-[#3d3657] rounded-xl p-2.5 focus:outline-none focus:border-[#f0c972] w-full" />
+                  </div>
+                  
+                  <div className="flex gap-2 justify-end mt-2">
+                    <button type="button" onClick={() => setActiveAddModal(null)} className="px-4 py-2 border border-[#221d35] rounded-xl text-[10px] font-mono text-[#6b6485] hover:text-[#9991b8] cursor-pointer">Cancel</button>
+                    <button type="submit" className="px-4 py-2 bg-[#f0c972] text-[#0d0b14] rounded-xl text-[10px] font-mono font-bold cursor-pointer hover:brightness-110 active:scale-95 transition-transform">Create 🎯</button>
+                  </div>
+                </form>
+              )}
+
+              {/* MODAL 2: ADD WATER */}
+              {activeAddModal === "water" && (
+                <div className="flex flex-col gap-4">
+                  <div>
+                    <span className="font-bebas text-2xl tracking-widest text-cyan-400">Log Hydration</span>
+                    <span className="block text-[8px] font-mono text-[#6b6485] uppercase tracking-wider mt-0.5">Record fluid consumption</span>
+                  </div>
+                  
+                  <p className="text-[10px] font-mono text-[#9991b8] leading-relaxed">
+                    Log a visual serving to add to your sips container. Currently configured to <span className="text-cyan-400 font-bold font-mono">{userState.waterUnit === "glass" ? "Glass" : userState.waterUnit === "bottle" ? "Bottle" : `${userState.waterUnit}`} ({userState.waterConfig?.capacity || 250} ml)</span> unit:
+                  </p>
+                  
+                  <div className="grid grid-cols-2 gap-2 mt-1">
+                    <button
+                      onClick={() => {
+                        handleLogWater("increment");
+                        setActiveAddModal(null);
+                      }}
+                      className="bg-[#17142a] border border-cyan-500/20 hover:border-cyan-400 p-3.5 rounded-2xl flex flex-col items-center gap-1.5 transition-all text-center cursor-pointer hover:scale-[1.02] active:scale-[0.98]"
+                    >
+                      <span className="text-xl">💧</span>
+                      <span className="font-bebas text-sm tracking-wide text-cyan-300">Quick Sip</span>
+                      <span className="text-[8px] font-mono text-[#6b6485]">+1 Serving ({userState.waterConfig?.capacity || 250} ml)</span>
+                    </button>
+                    
+                    <button
+                      onClick={() => {
+                        handleLogWater("increment");
+                        setTimeout(() => {
+                          handleLogWater("increment");
+                        }, 100);
+                        setActiveAddModal(null);
+                      }}
+                      className="bg-[#17142a] border border-cyan-500/20 hover:border-cyan-400 p-3.5 rounded-2xl flex flex-col items-center gap-1.5 transition-all text-center cursor-pointer hover:scale-[1.02] active:scale-[0.98]"
+                    >
+                      <span className="text-xl">🧊</span>
+                      <span className="font-bebas text-sm tracking-wide text-cyan-300">Large Drink</span>
+                      <span className="text-[8px] font-mono text-[#6b6485]">+2 Servings ({2 * (userState.waterConfig?.capacity || 250)} ml)</span>
+                    </button>
+                  </div>
+                  
+                  <div className="flex gap-2 justify-end mt-2 border-t border-[#1a172c] pt-3">
+                    <button onClick={() => setActiveAddModal(null)} className="px-4 py-2 border border-[#221d35] rounded-xl text-[10px] font-mono text-[#6b6485] hover:text-[#9991b8] cursor-pointer">Cancel</button>
+                  </div>
+                </div>
+              )}
+
+              {/* MODAL 3: START WORKOUT */}
+              {activeAddModal === "workout" && (
+                <div className="flex flex-col gap-4">
+                  <div>
+                    <span className="font-bebas text-2xl tracking-widest text-[#f0c972]">Training Routines</span>
+                    <span className="block text-[8px] font-mono text-[#6b6485] uppercase tracking-wider mt-0.5">Launch athletic session</span>
+                  </div>
+                  
+                  {userState.routines.length === 0 ? (
+                    <div className="text-center p-4 bg-[#17142a] border border-[#2a2440] rounded-2xl flex flex-col gap-2">
+                      <p className="text-[10px] font-mono text-[#9991b8] leading-relaxed">
+                        You haven't built or saved any routines yet. Ask the AI Coach to "Suggest a workout" to automatically generate one!
+                      </p>
+                      <button
+                        onClick={() => {
+                          setActiveAddModal(null);
+                          const rootNode = document.querySelector('[class*="fixed bottom-20 left-4"]');
+                          if (rootNode) (rootNode as HTMLButtonElement).click();
+                        }}
+                        className="text-[9.5px] font-mono font-bold text-[#f0c972] underline cursor-pointer hover:text-[#e07b3f] capitalize"
+                      >
+                        Open AI field coach 🤖
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="flex flex-col gap-2 max-h-56 overflow-y-auto pr-1">
+                      <label className="text-[8.5px] font-mono text-[#6b6485] uppercase tracking-wider">Select Routine</label>
+                      {userState.routines.map(r => (
+                        <button
+                          key={r.id}
+                          onClick={() => {
+                            handleStartWorkout(r.id);
+                            setActiveAddModal(null);
+                            setActiveTab("fitness"); 
+                          }}
+                          className="bg-[#17142a] border border-[#2a2440] hover:border-[#f0c972] p-3 rounded-2xl flex justify-between items-center transition-all text-left cursor-pointer hover:scale-[1.01]"
+                        >
+                          <div>
+                            <span className="font-bebas text-sm text-[#e8e3f8] block">{r.name}</span>
+                            <span className="text-[8px] font-mono text-[#6b6485] uppercase tracking-wide">
+                              {r.exercises.length} Exercises • {r.exercises.map(e => e.name).slice(0, 2).join(", ")}{r.exercises.length > 2 ? "..." : ""}
+                            </span>
+                          </div>
+                          <span className="text-[10px] font-mono text-[#f0c972] hover:translate-x-0.5 transition-transform">Start →</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  
+                  <div className="flex gap-2 justify-end mt-1 border-t border-[#1a172c] pt-2">
+                    <button onClick={() => setActiveAddModal(null)} className="px-4 py-2 border border-[#221d35] rounded-xl text-[10px] font-mono text-[#6b6485] hover:text-[#9991b8] cursor-pointer">Cancel</button>
+                  </div>
+                </div>
+              )}
+
+              {/* MODAL 4: ADD FOOD (SEARCH, MANUAL, SCAN) */}
+              {activeAddModal === "food" && (
+                <div className="flex flex-col gap-3.5 max-h-[80vh] overflow-y-auto pr-0.5">
+                  <div>
+                    <span className="font-bebas text-2xl tracking-widest text-pink-300">Calorie Tracker Log</span>
+                    <span className="block text-[8px] font-mono text-[#6b6485] uppercase tracking-wider mt-0.5">Record daily nutritional meals</span>
+                  </div>
+
+                  {/* Tab Selector inside Food Modal */}
+                  <div className="grid grid-cols-3 bg-[#0d0b14] border border-[#2a2440] rounded-xl p-1 text-[9px] font-mono">
+                    <button 
+                      onClick={() => { setFoodTab("search"); setSelectedFoodProduct(null); }}
+                      className={`py-1.5 rounded-lg text-center font-bold cursor-pointer ${foodTab === "search" ? "bg-[#1d1933] text-pink-300" : "text-[#6b6485] hover:text-white"}`}
+                    >
+                      SEARCH DATABASE
+                    </button>
+                    <button 
+                      onClick={() => { setFoodTab("manual"); setSelectedFoodProduct(null); }}
+                      className={`py-1.5 rounded-lg text-center font-bold cursor-pointer ${foodTab === "manual" ? "bg-[#1d1933] text-pink-300" : "text-[#6b6485] hover:text-white"}`}
+                    >
+                      MANUAL ENTRY
+                    </button>
+                    <button 
+                      onClick={() => { setFoodTab("scanner"); setSelectedFoodProduct(null); }}
+                      className={`py-1.5 rounded-lg text-center font-bold cursor-pointer ${foodTab === "scanner" ? "bg-[#1d1933] text-pink-300" : "text-[#6b6485] hover:text-white"}`}
+                    >
+                      BARCODE SCAN
+                    </button>
+                  </div>
+
+                  {/* DISPLAY TAB: 1. SEARCH */}
+                  {foodTab === "search" && (
+                    <div className="flex flex-col gap-3">
+                      {selectedFoodProduct ? (
+                        <div className="bg-[#17142a] border border-[#2a2440] rounded-2xl p-4 flex flex-col gap-3 animate-in fade-in zoom-in-95 duration-200">
+                          <div className="flex gap-3">
+                            {selectedFoodProduct.imageUrl && (
+                              <img src={selectedFoodProduct.imageUrl} alt={selectedFoodProduct.name} referrerPolicy="no-referrer" className="w-12 h-12 rounded-xl object-cover border border-[#2a2440] bg-black" />
+                            )}
+                            <div className="flex-1 text-left min-w-0">
+                              <span className="text-[10px] font-mono font-bold text-pink-300 uppercase tracking-wide block truncate">{selectedFoodProduct.brand || "Generic"}</span>
+                              <span className="font-bebas text-lg leading-tight text-white block truncate">{selectedFoodProduct.name}</span>
+                              <span className="text-[9px] font-mono text-[#6b6485] block mt-0.5">Barcode: {selectedFoodProduct.barcode || "N/A"}</span>
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-4 gap-1.5 p-2 bg-[#0d0b14] border border-[#201c35] rounded-xl text-center font-mono">
+                            <div className="flex flex-col gap-0.5">
+                              <span className="text-[7.5px] text-[#6b6485] uppercase">Calories</span>
+                              <span className="text-xs font-bold text-[#fbcfe8]">{Math.round(selectedFoodProduct.calories * foodServingMultiplier)} kcal</span>
+                            </div>
+                            <div className="flex flex-col gap-0.5 border-l border-[#201c35]">
+                              <span className="text-[7.5px] text-[#6b6485] uppercase">Protein</span>
+                              <span className="text-xs font-bold text-indigo-300">{Math.round(selectedFoodProduct.protein * foodServingMultiplier)}g</span>
+                            </div>
+                            <div className="flex flex-col gap-0.5 border-l border-[#201c35]">
+                              <span className="text-[7.5px] text-[#6b6485] uppercase">Carbs</span>
+                              <span className="text-xs font-bold text-green-300">{Math.round(selectedFoodProduct.carbs * foodServingMultiplier)}g</span>
+                            </div>
+                            <div className="flex flex-col gap-0.5 border-l border-[#201c35]">
+                              <span className="text-[7.5px] text-[#6b6485] uppercase">Fat</span>
+                              <span className="text-xs font-bold text-amber-300">{Math.round(selectedFoodProduct.fat * foodServingMultiplier)}g</span>
+                            </div>
+                          </div>
+
+                          <div className="flex justify-between items-center bg-[#0d0b14]/50 border border-[#231d3d] rounded-xl px-3 py-1.5">
+                            <span className="text-[9.5px] font-mono text-[#9991b8] uppercase">Serving scale</span>
+                            <div className="flex items-center gap-3">
+                              <button 
+                                onClick={() => setFoodServingMultiplier(prev => Math.max(0.25, prev - 0.25))}
+                                className="w-5 h-5 rounded bg-[#1e1a30] text-[10px] font-bold font-mono text-pink-300 text-center flex items-center justify-center hover:bg-[#2e2949] cursor-pointer"
+                              >
+                                -
+                              </button>
+                              <span className="font-mono text-xs font-bold text-white min-w-[32px] text-center">{foodServingMultiplier.toFixed(2)}x</span>
+                              <button 
+                                onClick={() => setFoodServingMultiplier(prev => prev + 0.25)}
+                                className="w-5 h-5 rounded bg-[#1e1a30] text-[10px] font-bold font-mono text-pink-300 text-center flex items-center justify-center hover:bg-[#2e2949] cursor-pointer"
+                              >
+                                +
+                              </button>
+                            </div>
+                          </div>
+
+                          <div className="flex gap-2">
+                            <button 
+                              onClick={() => setSelectedFoodProduct(null)}
+                              className="flex-1 py-2 border border-[#221d35] rounded-xl text-[10px] font-mono text-[#6b6485] hover:text-white text-center cursor-pointer"
+                            >
+                              Back
+                            </button>
+                            <button 
+                              onClick={() => {
+                                handleLogFood(
+                                  selectedFoodProduct.name,
+                                  selectedFoodProduct.calories,
+                                  selectedFoodProduct.protein,
+                                  selectedFoodProduct.carbs,
+                                  selectedFoodProduct.fat,
+                                  selectedFoodProduct.barcode,
+                                  foodServingMultiplier
+                                );
+                                setSelectedFoodProduct(null);
+                                setActiveAddModal(null);
+                              }}
+                              className="flex-1 py-2 bg-[#fbcfe8] hover:bg-[#f9a8d4] text-[#0d0b14] rounded-xl text-[10px] font-mono font-bold text-center cursor-pointer"
+                            >
+                              Log Meal 🍏
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="flex flex-col gap-3">
+                          <form onSubmit={(e) => {
+                            e.preventDefault();
+                            handleFoodSearch(foodSearchQuery);
+                          }} className="flex gap-1.5">
+                            <input 
+                              type="text" 
+                              value={foodSearchQuery}
+                              onChange={(e) => setFoodSearchQuery(e.target.value)}
+                              placeholder="Search e.g., Oatmeal, Banana, Protein Shake..."
+                              className="flex-1 bg-[#17142a] border border-[#2a2440] text-xs font-mono text-[#e8e3f8] placeholder-[#413963] rounded-xl px-3 py-2.5 focus:outline-none focus:border-[#fbcfe8]"
+                            />
+                            <button 
+                              type="submit" 
+                              disabled={isSearchingFood}
+                              className="bg-[#17142a] border border-[#2a2440] hover:border-[#fbcfe8] px-3 rounded-xl font-mono text-xs text-pink-300 cursor-pointer disabled:opacity-40"
+                            >
+                              Search
+                            </button>
+                          </form>
+
+                          {scannedProductError && (
+                            <div className="p-2.5 bg-red-950/20 border border-red-500/10 rounded-xl text-center">
+                              <span className="text-[10px] font-mono font-bold text-red-400 block">{scannedProductError}</span>
+                            </div>
+                          )}
+
+                          <div className="max-h-56 overflow-y-auto flex flex-col gap-1.5 pr-0.5">
+                            {isSearchingFood ? (
+                              <div className="text-center py-6 font-mono text-[10px] text-[#6b6485] flex flex-col items-center gap-1">
+                                <span className="animate-spin border-t-2 border-pink-300 w-4 h-4 rounded-full" />
+                                <span>Querying OpenFoodFacts index...</span>
+                              </div>
+                            ) : foodSearchResults.length > 0 ? (
+                              foodSearchResults.map((prod, index) => (
+                                <button
+                                  key={index}
+                                  onClick={() => {
+                                    setSelectedFoodProduct(prod);
+                                    setFoodServingMultiplier(1);
+                                  }}
+                                  className="bg-[#17142a]/60 hover:bg-[#1a172c] border border-[#231e3b] hover:border-pink-300/40 rounded-xl p-2.5 flex justify-between items-center text-left transition-all cursor-pointer hover:scale-[1.01]"
+                                >
+                                  <div className="truncate min-w-0 flex-1 pr-2">
+                                    <span className="text-[8px] font-mono font-bold text-pink-300 block uppercase">{prod.brand}</span>
+                                    <span className="font-bebas text-sm text-[#e8e3f8] block truncate leading-tight mt-0.5">{prod.name}</span>
+                                    <span className="text-[8.5px] font-mono text-[#6b6485] block mt-0.5 truncate">
+                                      P: {prod.protein}g | C: {prod.carbs}g | F: {prod.fat}g • Serv: 100g
+                                    </span>
+                                  </div>
+                                  <div className="shrink-0 font-mono text-right">
+                                    <span className="text-xs font-bold text-[#fbcfe8] block">{prod.calories} kcal</span>
+                                    <span className="text-[8px] text-pink-300 block font-bold mt-0.5">Log →</span>
+                                  </div>
+                                </button>
+                              ))
+                            ) : (
+                              <div className="text-center py-6">
+                                <p className="text-[9.5px] font-mono text-[#6b6485] leading-relaxed">
+                                  No database matches loaded. Type keywords into input box above or tap button below to scan any physical product packaging.
+                                </p>
+                                <button
+                                  onClick={() => setFoodTab("scanner")}
+                                  className="mt-3 inline-flex items-center gap-1.5 bg-[#17142a] border border-[#2a2440] hover:border-pink-300 text-pink-300 px-3.5 py-2 rounded-full font-mono text-[9px] font-bold cursor-pointer transition-all"
+                                >
+                                  <span>📷</span> START CAMERA BARCODE SCANNER
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* DISPLAY TAB: 2. MANUAL */}
+                  {foodTab === "manual" && (
+                    <form onSubmit={(e) => {
+                      e.preventDefault();
+                      const form = e.currentTarget;
+                      const name = (form.elements.namedItem("mName") as HTMLInputElement).value.trim();
+                      const cals = parseInt((form.elements.namedItem("mCals") as HTMLInputElement).value) || 0;
+                      const prot = parseFloat((form.elements.namedItem("mProt") as HTMLInputElement).value) || 0;
+                      const carb = parseFloat((form.elements.namedItem("mCarb") as HTMLInputElement).value) || 0;
+                      const fatv = parseFloat((form.elements.namedItem("mFat") as HTMLInputElement).value) || 0;
+                      const mult = parseFloat((form.elements.namedItem("mMult") as HTMLInputElement).value) || 1;
+                      
+                      if (name) {
+                        handleLogFood(name, cals, prot, carb, fatv, "", mult);
+                        setActiveAddModal(null);
+                      }
+                    }} className="flex flex-col gap-2 p-1">
+                      <div className="flex flex-col gap-1 text-left">
+                        <label className="text-[8px] font-mono text-[#6b6485] uppercase tracking-wider">Food Name</label>
+                        <input required name="mName" placeholder="e.g., Cooked White Rice" className="bg-[#17142a] border border-[#2a2440] text-xs font-mono text-[#e8e3f8] rounded-xl px-3 py-2 focus:outline-none focus:border-pink-300" />
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2 mt-0.5">
+                        <div className="flex flex-col gap-1 text-left">
+                          <label className="text-[8px] font-mono text-[#6b6485] uppercase tracking-wider">Calories (kcal)</label>
+                          <input type="number" required defaultValue="150" name="mCals" className="bg-[#17142a] border border-[#2a2440] text-xs font-mono text-[#e8e3f8] rounded-xl px-3 py-2 focus:outline-none focus:border-pink-300" />
+                        </div>
+                        <div className="flex flex-col gap-1 text-left">
+                          <label className="text-[8px] font-mono text-[#6b6485] uppercase tracking-wider">Servings count</label>
+                          <input type="number" step="0.25" required defaultValue="1" name="mMult" className="bg-[#17142a] border border-[#2a2440] text-xs font-mono text-[#e8e3f8] rounded-xl px-3 py-2 focus:outline-none focus:border-pink-300" />
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-3 gap-1.5 mt-1 relative">
+                        <div className="flex flex-col gap-1 text-left">
+                          <label className="text-[8.5px] font-mono text-indigo-300 uppercase block tracking-wider">Protein (g)</label>
+                          <input type="number" step="0.1" defaultValue="4" name="mProt" className="bg-[#17142a] border border-[#2a2440] text-xs font-mono text-[#e8e3f8] rounded-xl px-3 py-2 focus:outline-none focus:border-pink-300" />
+                        </div>
+                        <div className="flex flex-col gap-1 text-left border-l border-[#211d35]/40 pl-1.5">
+                          <label className="text-[8.5px] font-mono text-green-300 uppercase block tracking-wider">Carbs (g)</label>
+                          <input type="number" step="0.1" defaultValue="30" name="mCarb" className="bg-[#17142a] border border-[#2a2440] text-xs font-mono text-[#e8e3f8] rounded-xl px-3 py-2 focus:outline-none focus:border-pink-300" />
+                        </div>
+                        <div className="flex flex-col gap-1 text-left border-l border-[#211d35]/40 pl-1.5">
+                          <label className="text-[8.5px] font-mono text-amber-300 uppercase block tracking-wider">Fat (g)</label>
+                          <input type="number" step="0.1" defaultValue="1" name="mFat" className="bg-[#17142a] border border-[#2a2440] text-xs font-mono text-[#e8e3f8] rounded-xl px-3 py-2 focus:outline-none focus:border-pink-300" />
+                        </div>
+                      </div>
+
+                      <button type="submit" className="w-full mt-3 py-2.5 bg-[#fbcfe8] text-[#0d0b14] rounded-xl text-[10px] font-mono font-bold text-center hover:bg-[#f9a8d4] cursor-pointer active:scale-95 transition-transform uppercase tracking-wider">
+                        Quick Add Manual Meal 🍎
+                      </button>
+                    </form>
+                  )}
+
+                  {/* DISPLAY TAB: 3. BARCODE SCAN */}
+                  {foodTab === "scanner" && (
+                    <div className="flex flex-col gap-3 text-center">
+                      <div className="p-2.5 bg-[#0d0b14] rounded-xl border border-transparent">
+                        <span className="text-[9.5px] font-mono text-[#9991b8] leading-tight block">Point camera viewfinder at any food product's barcode label. Detection is autonomous.</span>
+                      </div>
+
+                      {/* Viewfinder Target Container */}
+                      <div 
+                        id="applet-barcode-finder" 
+                        className="w-full h-44 bg-black rounded-2xl border border-pink-500/20 overflow-hidden relative"
+                      >
+                        {isBarcodeScanning && (
+                          <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 border-t-2 border-pink-400 opacity-60 animate-pulse flex items-center justify-center font-mono text-[7px] text-pink-300 bg-pink-500/5 h-2">
+                            <span>ALIGN BARCODE</span>
+                          </div>
+                        )}
+                        <div className="absolute inset-0 flex items-center justify-center pointer-events-none select-none z-10">
+                          <div className="w-44 h-32 border-2 border-dashed border-pink-300/30 rounded-lg" />
+                        </div>
+                        {!isBarcodeScanning && !scannedProductError && (
+                          <div className="absolute inset-0 bg-[#0d0b14]/90 flex items-center justify-center">
+                            <span className="font-mono text-[9px] text-[#6b6485]">Initializing lens...</span>
+                          </div>
+                        )}
+                      </div>
+
+                      {scannedProductError && (
+                        <div className="p-2 bg-red-950/20 border border-red-500/10 rounded-xl">
+                          <span className="text-[10px] font-mono font-bold text-red-400 block">{scannedProductError}</span>
+                        </div>
+                      )}
+
+                      <button 
+                        type="button" 
+                        onClick={() => { setFoodTab("search"); }} 
+                        className="w-full py-2 border border-[#221d35] rounded-xl text-[10px] font-mono text-[#6b6485] hover:text-white text-center cursor-pointer uppercase tracking-wider"
+                      >
+                        Select database text search 🔍
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
 
       {/* Global Tabbar footer */}
       <nav className="fixed bottom-0 left-0 right-0 h-16 bg-[#0d0b14ee] border-t border-[#221d35] flex items-center justify-around backdrop-blur-xl z-40 max-w-md w-full mx-auto">

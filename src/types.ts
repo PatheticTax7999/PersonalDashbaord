@@ -90,6 +90,25 @@ export interface UserState {
   waterConfig?: WaterConfig;
   taskStreak?: number;
   lastStreakCompletedDate?: string | null;
+  
+  // Nutrition & Calorie Tracking additions
+  calorieGoal?: number;
+  proteinGoalPct?: number;
+  carbGoalPct?: number;
+  fatGoalPct?: number;
+  foodLog?: Record<string, FoodLogEntry[]>;
+}
+
+export interface FoodLogEntry {
+  id: string;
+  name: string;
+  calories: number;
+  protein: number; // grams per serving/qty
+  carbs: number; // grams per serving/qty
+  fat: number; // grams per serving/qty
+  quantity: number;
+  barcode?: string;
+  loggedAt: string; // "HH:MM"
 }
 
 export interface CalendarEvent {

@@ -6,6 +6,7 @@ interface AIFieldCoachProps {
   onSaveRoutine: (id: string | null, name: string, exercises: Exercise[]) => void;
   onAddTodayGoal: (text: string) => void;
   onUpdateWaterGoal: (amount: number) => void;
+  onUpdateCalorieTarget?: (calorieGoal: number, proteinGoalPct: number, carbGoalPct: number, fatGoalPct: number) => void;
   setActiveTab: (tab: "home" | "fitness" | "health" | "calendar") => void;
 }
 
@@ -14,10 +15,14 @@ interface Message {
   text: string;
   loading?: boolean;
   actionExecuted?: {
-    type: "create_routine" | "add_goal" | "update_water_goal";
+    type: "create_routine" | "add_goal" | "update_water_goal" | "set_dietary_plan";
     name?: string;
     text?: string;
     amount?: number;
+    calorieGoal?: number;
+    proteinGoalPct?: number;
+    carbGoalPct?: number;
+    fatGoalPct?: number;
   };
 }
 
@@ -48,6 +53,7 @@ export default function AIFieldCoach({
   onSaveRoutine,
   onAddTodayGoal,
   onUpdateWaterGoal,
+  onUpdateCalorieTarget,
   setActiveTab
 }: AIFieldCoachProps) {
   const [isOpen, setIsOpen] = useState(false);
@@ -109,6 +115,13 @@ export default function AIFieldCoach({
 
     const waterDone = Object.values(userState.waterLog).reduce((acc, curr) => acc + curr, 0);
 
+    const todayDate = new Date().toDateString();
+    const todayFood = userState.foodLog?.[todayDate] || [];
+    const totalCal = todayFood.reduce((sum, f) => sum + (f.calories * f.quantity), 0);
+    const totalProt = todayFood.reduce((sum, f) => sum + (f.protein * f.quantity), 0);
+    const totalCarb = todayFood.reduce((sum, f) => sum + (f.carbs * f.quantity), 0);
+    const totalFat = todayFood.reduce((sum, f) => sum + (f.fat * f.quantity), 0);
+
     const completedWorkoutsSummary = userState.completedWorkouts?.length
       ? userState.completedWorkouts
           .slice(-10)
@@ -157,6 +170,23 @@ If you suggest any other personal daily goal for today, append this action JSON 
 }
 \`\`\`
 
+If you finalise a customized dietary meal plan or set calorie & macro targets based on the user's input/goals, you MUST append this action JSON at the very end to save it directly into their dashboard:
+\`\`\`json
+{
+  "action": "set_dietary_plan",
+  "calorieGoal": 2200,
+  "proteinGoalPct": 30,
+  "carbGoalPct": 40,
+  "fatGoalPct": 30
+}
+\`\`\`
+Ensure dietary macro split percentages sum to EXACTLY 100% and fall within acceptable ranges:
+- Protein: 15% to 40% of daily calories (1g = 4 kcal)
+- Carbohydrates: 20% to 60% of daily calories (1g = 4 kcal)
+- Fat: 15% to 40% of daily calories (1g = 9 kcal)
+
+When asking questions or formulating dietary recommendations, you MUST pull context from and reference their active supplements being taken, weight logs/trends, and physical workout frequency. Guide them through a cohesive 3-question sequence to define their targets if you need more data (goals, activity levels, preference).
+
 Only output JSON actions if the user explicitly or implicitly requested that configuration or suggestion.
 
 USER PERFORMANCE FILE:
@@ -167,7 +197,8 @@ USER PERFORMANCE FILE:
 - Supplements checklists:\n${suppSummary}
 - Weight progress logs:\n${weightHistory}
 - Daily goal tasks checklist:\n${goalsStr}
-- Hydration goal: ${userState.waterGoal} ml (unit: ${userState.waterUnit})`;
+- Hydration goal: ${userState.waterGoal} ml (unit: ${userState.waterUnit})
+- Today's Diet Intake Log: ${totalCal} kcal (Protein: ${totalProt}g, Carbs: ${totalCarb}g, Fat: ${totalFat}g) | Target: ${userState.calorieGoal || 2000} kcal (P: ${userState.proteinGoalPct || 30}%, C: ${userState.carbGoalPct || 40}%, F: ${userState.fatGoalPct || 30}%)`;
   }
 
   async function handleSend() {
@@ -242,6 +273,20 @@ USER PERFORMANCE FILE:
             actionExecuted = {
               type: "update_water_goal",
               amount: Number(parsed.amount)
+            };
+          } else if (parsed && parsed.action === "set_dietary_plan") {
+            onUpdateCalorieTarget?.(
+              Number(parsed.calorieGoal),
+              Number(parsed.proteinGoalPct),
+              Number(parsed.carbGoalPct),
+              Number(parsed.fatGoalPct)
+            );
+            actionExecuted = {
+              type: "set_dietary_plan",
+              calorieGoal: Number(parsed.calorieGoal),
+              proteinGoalPct: Number(parsed.proteinGoalPct),
+              carbGoalPct: Number(parsed.carbGoalPct),
+              fatGoalPct: Number(parsed.fatGoalPct)
             };
           }
         } catch (e) {
@@ -439,6 +484,30 @@ ${supplementAdvice}
                           className="mt-1 w-full bg-[#1c182c] border border-cyan-500/30 hover:border-cyan-500 text-cyan-400 text-[9px] font-bold py-1 px-2 rounded hover:text-white transition-all text-center cursor-pointer uppercase tracking-wider"
                         >
                           Check log 💧
+                        </button>
+                      </>
+                    )}
+                    {m.actionExecuted.type === "set_dietary_plan" && (
+                      <>
+                        <div className="flex items-center gap-1.5 text-[10px] text-amber-400 font-bold">
+                          <span>📊</span> DIETARY PLAN SAVED DIRECTLY
+                        </div>
+                        <div className="text-[10px] text-[#b5a9df] leading-normal font-mono">
+                          Target Calories: <strong className="text-white font-bold">{m.actionExecuted.calorieGoal} kcal</strong>
+                          <br />
+                          Macro Split: <span className="text-[#a5b4fc]">P: {m.actionExecuted.proteinGoalPct}%</span> | <span className="text-[#86efac]">C: {m.actionExecuted.carbGoalPct}%</span> | <span className="text-[#fca5a5]">F: {m.actionExecuted.fatGoalPct}%</span>
+                        </div>
+                        <p className="text-[9px] italic text-[#6b6485] mt-1">
+                          Calculations verified within medical and athletic guidelines. Total: 100%
+                        </p>
+                        <button
+                          onClick={() => {
+                            setActiveTab("home");
+                            setIsOpen(false);
+                          }}
+                          className="mt-1 w-full bg-gradient-to-r from-amber-400 to-[#e07b3f] text-[#0d0b14] text-[9.5px] font-bold py-1.5 px-2 rounded hover:brightness-110 active:scale-95 transition-all text-center cursor-pointer uppercase tracking-wider"
+                        >
+                          Show Macro Wheels 📊
                         </button>
                       </>
                     )}

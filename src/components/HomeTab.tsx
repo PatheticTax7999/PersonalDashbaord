@@ -83,6 +83,7 @@ export default function HomeTab({
   const [touchStartX, setTouchStartX] = useState<number | null>(null);
   const [showNutritionModal, setShowNutritionModal] = useState(false);
   const [innerFoodSearch, setInnerFoodSearch] = useState("");
+  const [innerFoodSearchDb, setInnerFoodSearchDb] = useState<"all" | "afcd" | "off">("all");
   const [innerSearchResults, setInnerSearchResults] = useState<any[]>([]);
   const [isInnerSearching, setIsInnerSearching] = useState(false);
   const [innerSelectedProduct, setInnerSelectedProduct] = useState<any | null>(null);
@@ -627,9 +628,32 @@ export default function HomeTab({
 
               {/* SEARCH & ADD DIRECTLY FROM JOURNAL FOR ULTRA-FAST COMPACT WORKFLOW */}
               <div className="bg-[#13111f] border border-[#2a2440] rounded-2xl p-5 shadow-sm">
-                <div className="flex justify-between items-center mb-3">
-                  <span className="text-[10px] text-[#6b6485] font-mono tracking-wider uppercase">Direct Database search lookup</span>
-                  <span className="text-[7.5px] font-mono bg-pink-500/10 text-pink-300 px-2 py-0.5 rounded-full uppercase">Powered by OFF API</span>
+                <div className="flex flex-col gap-2 mb-3">
+                  <div className="flex justify-between items-center">
+                    <span className="text-[10px] text-[#6b6485] font-mono tracking-wider uppercase">Direct Database search lookup</span>
+                    <span className="text-[7.5px] font-mono bg-pink-500/10 text-pink-300 px-2 py-0.5 rounded-full uppercase">Powered by AFCD & OFF</span>
+                  </div>
+                  
+                  {/* Database Selector Row */}
+                  <div className="flex items-center justify-between bg-[#0e0c17] border border-[#231d3d] rounded-xl p-1.5">
+                    <span className="text-[9px] font-mono text-[#6b6485] pl-1.5 uppercase font-bold font-sans">Database Source:</span>
+                    <div className="flex gap-1">
+                       {(["all", "afcd", "off"] as const).map((db) => (
+                         <button
+                           key={db}
+                           type="button"
+                           onClick={() => setInnerFoodSearchDb(db)}
+                           className={`px-2 py-1 rounded-lg text-[9px] font-mono font-bold uppercase transition-all cursor-pointer ${
+                             innerFoodSearchDb === db
+                               ? "bg-[#252044] text-pink-300 border border-pink-300/30"
+                               : "text-[#6b6485] hover:text-[#e8e3f8] border border-transparent"
+                           }`}
+                         >
+                           {db === "all" ? "All" : db === "afcd" ? "AFCD (Aust)" : "OpenFoodFacts"}
+                         </button>
+                       ))}
+                    </div>
+                  </div>
                 </div>
 
                 <form onSubmit={async (e) => {
@@ -638,7 +662,7 @@ export default function HomeTab({
                   setIsInnerSearching(true);
                   setInnerSearchError("");
                   try {
-                    const res = await fetch(`/api/food/search?q=${encodeURIComponent(innerFoodSearch)}`);
+                    const res = await fetch(`/api/food/search?q=${encodeURIComponent(innerFoodSearch)}&db=${innerFoodSearchDb}`);
                     if (res.ok) {
                       const data = await res.json();
                       setInnerSearchResults(data || []);

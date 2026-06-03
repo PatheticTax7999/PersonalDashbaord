@@ -12,6 +12,7 @@ import FitnessTab from "./components/FitnessTab";
 import HealthTab from "./components/HealthTab";
 import CalendarTab from "./components/CalendarTab";
 import AIFieldCoach from "./components/AIFieldCoach";
+import AIFoodTracker from "./components/AIFoodTracker";
 
 // Import notification utilities
 import {
@@ -111,8 +112,22 @@ export default function App() {
   // Addition Modal and Plus FAB Submenu states
   const [isAddMenuOpen, setIsAddMenuOpen] = useState(false);
   const [activeAddModal, setActiveAddModal] = useState<"workout" | "food" | "water" | "goal" | null>(null);
+
+  // Stop background layout scrolling when any metric-logging modal is active
+  useEffect(() => {
+    if (activeAddModal) {
+      document.body.classList.add("overflow-hidden");
+    } else {
+      document.body.classList.remove("overflow-hidden");
+    }
+    return () => {
+      document.body.classList.remove("overflow-hidden");
+    };
+  }, [activeAddModal]);
+
   const [foodTab, setFoodTab] = useState<"search" | "manual" | "scanner">("search");
   const [foodSearchQuery, setFoodSearchQuery] = useState("");
+  const [foodSearchDb, setFoodSearchDb] = useState<"all" | "afcd" | "off">("all");
   const [foodSearchResults, setFoodSearchResults] = useState<any[]>([]);
   const [isSearchingFood, setIsSearchingFood] = useState(false);
   const [selectedFoodProduct, setSelectedFoodProduct] = useState<any | null>(null);
@@ -588,7 +603,7 @@ export default function App() {
     if (!query.trim()) return;
     setIsSearchingFood(true);
     try {
-      const res = await fetch(`/api/food/search?q=${encodeURIComponent(query)}`);
+      const res = await fetch(`/api/food/search?q=${encodeURIComponent(query)}&db=${foodSearchDb}`);
       if (res.ok) {
         const data = await res.json();
         setFoodSearchResults(data || []);
@@ -1453,21 +1468,27 @@ export default function App() {
       {/* Global input Modals Layer */}
       <AnimatePresence>
         {activeAddModal && (
-          <div className="fixed inset-0 bg-[#0d0b14dd] backdrop-blur-md z-50 flex items-center justify-center p-4">
+          <div className="fixed inset-0 bg-[#0d0b14dd] backdrop-blur-md z-50 flex items-center justify-center p-4 overflow-hidden">
             <motion.div
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
               transition={{ duration: 0.2 }}
-              className="bg-[#13111f] border border-[#2a2440] rounded-3xl p-6 max-w-sm w-full shadow-2xl relative flex flex-col gap-4 text-left"
+              className={`bg-[#13111f] border border-[#2a2440] rounded-3xl shadow-2xl relative flex flex-col text-left ${
+                activeAddModal === "food"
+                  ? "p-4 max-w-md w-full h-[90vh] max-h-[90vh] sm:h-[88vh] sm:max-h-[88vh] overflow-hidden gap-3"
+                  : "p-6 max-w-sm w-full gap-4"
+              }`}
             >
               {/* Close Button top-right */}
-              <button 
-                onClick={() => setActiveAddModal(null)}
-                className="absolute top-4 right-4 text-gray-500 hover:text-white cursor-pointer p-1"
-              >
-                ✕
-              </button>
+              {activeAddModal !== "food" && (
+                <button 
+                  onClick={() => setActiveAddModal(null)}
+                  className="absolute top-4 right-4 text-gray-500 hover:text-white cursor-pointer p-1"
+                >
+                  ✕
+                </button>
+              )}
 
               {/* MODAL 1: ADD GOAL */}
               {activeAddModal === "goal" && (
@@ -1612,8 +1633,21 @@ export default function App() {
                 </div>
               )}
 
-              {/* MODAL 4: ADD FOOD (SEARCH, MANUAL, SCAN) */}
+              {/* MODAL 4: ADD FOOD (REVAMPED CAL AI FIELD COACH SCANNER) */}
               {activeAddModal === "food" && (
+                <AIFoodTracker
+                  onClose={() => setActiveAddModal(null)}
+                  onLogFood={(name, cals, prot, carbs, fat, barcode, quantity) => {
+                    handleLogFood(name, cals, prot, carbs, fat, barcode, quantity || 1);
+                  }}
+                  onOpenWorkoutModal={() => {
+                    setActiveAddModal("workout");
+                  }}
+                />
+              )}
+
+              {/* MODAL 4: ADD FOOD (SEARCH, MANUAL, SCAN) */}
+              {false && activeAddModal === "food" && (
                 <div className="flex flex-col gap-3.5 max-h-[80vh] overflow-y-auto pr-0.5">
                   <div>
                     <span className="font-bebas text-2xl tracking-widest text-pink-300">Calorie Tracker Log</span>
@@ -1725,6 +1759,27 @@ export default function App() {
                         </div>
                       ) : (
                         <div className="flex flex-col gap-3">
+                          {/* Database source toggle */}
+                          <div className="flex items-center justify-between bg-[#151226] border border-[#26213d] rounded-xl p-1.5">
+                            <span className="text-[9px] font-mono text-[#6b6485] pl-1.5 uppercase font-bold font-sans">Database Source:</span>
+                            <div className="flex gap-1">
+                              {(["all", "afcd", "off"] as const).map((db) => (
+                                <button
+                                  key={db}
+                                  type="button"
+                                  onClick={() => setFoodSearchDb(db)}
+                                  className={`px-2 py-1 rounded-lg text-[9px] font-mono font-bold uppercase transition-all cursor-pointer ${
+                                    foodSearchDb === db
+                                      ? "bg-[#252044] text-pink-300 border border-pink-300/30"
+                                      : "text-[#6b6485] hover:text-[#e8e3f8] border border-transparent"
+                                  }`}
+                                >
+                                  {db === "all" ? "All" : db === "afcd" ? "AFCD (Aust)" : "OpenFoodFacts"}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+
                           <form onSubmit={(e) => {
                             e.preventDefault();
                             handleFoodSearch(foodSearchQuery);
@@ -1733,7 +1788,11 @@ export default function App() {
                               type="text" 
                               value={foodSearchQuery}
                               onChange={(e) => setFoodSearchQuery(e.target.value)}
-                              placeholder="Search e.g., Oatmeal, Banana, Protein Shake..."
+                              placeholder={
+                                foodSearchDb === "afcd" 
+                                  ? "Search Vegemite, Weet-Bix, Kangaroo beef..." 
+                                  : "Search e.g., Oatmeal, Banana, Protein Shake..."
+                              }
                               className="flex-1 bg-[#17142a] border border-[#2a2440] text-xs font-mono text-[#e8e3f8] placeholder-[#413963] rounded-xl px-3 py-2.5 focus:outline-none focus:border-[#fbcfe8]"
                             />
                             <button 

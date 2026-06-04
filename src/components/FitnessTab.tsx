@@ -227,16 +227,16 @@ export default function FitnessTab({
   };
 
   const getPlateStyle = (kg: number) => {
-    if (kg >= 20) return { height: 110, width: 22, color: "bg-[#2f80ed] text-white" };
-    if (kg >= 15) return { height: 95, width: 20, color: "bg-[#f2c94c] text-black" };
-    if (kg >= 10) return { height: 80, width: 18, color: "bg-[#27ae60] text-white" };
-    if (kg >= 5) return { height: 65, width: 16, color: "bg-[#cbd5e1] text-black" };
-    if (kg >= 2.5) return { height: 50, width: 14, color: "bg-[#eb5757] text-white" };
-    if (kg >= 1.25) return { height: 40, width: 12, color: "bg-[#707070] text-white" };
+    if (kg >= 20) return { height: 84, width: 18, color: "bg-[#2f80ed] text-white" };
+    if (kg >= 15) return { height: 74, width: 16, color: "bg-[#f2c94c] text-black" };
+    if (kg >= 10) return { height: 64, width: 14, color: "bg-[#27ae60] text-white" };
+    if (kg >= 5) return { height: 54, width: 12, color: "bg-[#cbd5e1] text-black" };
+    if (kg >= 2.5) return { height: 44, width: 10, color: "bg-[#eb5757] text-white" };
+    if (kg >= 1.25) return { height: 34, width: 8, color: "bg-[#707070] text-white" };
     
     // Custom/Fallback sizing
-    const calculatedHeight = Math.min(110, Math.max(35, 35 + (kg * 3)));
-    const calculatedWidth = Math.min(22, Math.max(10, 10 + (kg / 2)));
+    const calculatedHeight = Math.min(84, Math.max(30, 30 + (kg * 2.5)));
+    const calculatedWidth = Math.min(18, Math.max(8, 8 + (kg / 2)));
     return { height: calculatedHeight, width: calculatedWidth, color: "bg-[#10b981] text-white" };
   };
 
@@ -1271,7 +1271,7 @@ export default function FitnessTab({
               <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-5 pb-10">
                 
                 {/* visual barbell component block */}
-                <div className="bg-[#13111f] border border-[#2a2440] rounded-2xl p-5 flex flex-col items-center justify-start gap-4 relative overflow-hidden min-h-[270px] shrink-0">
+                <div className="bg-[#13111f] border border-[#2a2440] rounded-2xl p-5 flex flex-col items-center justify-start gap-4 relative overflow-hidden min-h-[250px] shrink-0">
                   {/* Total Weight Counter */}
                   <div className="text-center">
                     <span className="font-bebas text-4xl text-[#f0c972] tracking-wider block font-bold">
@@ -1284,20 +1284,20 @@ export default function FitnessTab({
                   </div>
 
                   {/* Visual Barbell representation with stacked plates */}
-                  <div className="w-full flex items-center justify-center h-32 shrink-0 relative mt-4 mb-6">
+                  <div className="w-full flex items-center justify-center h-24 shrink-0 relative mt-4 mb-4">
                     
                     {/* If there is a bar */}
                     {calculatorBarWeight > 0 ? (
                       <>
                         {/* The Barbell sleeve shaft bar */}
-                        <div className="absolute top-1/2 -translate-y-1/2 h-3 w-full bg-gradient-to-r from-[#221d35] via-[#a49bcb] to-[#221d35] rounded-full border border-[#2a2440]" />
+                        <div className="absolute top-1/2 -translate-y-1/2 h-2 w-full bg-gradient-to-r from-[#221d35] via-[#a49bcb] to-[#221d35] rounded-full border border-[#2a2440]" />
                         
                         {/* Sleeve Collars */}
-                        <div className="absolute left-[30%] top-1/2 -translate-y-1/2 h-16 w-3.5 bg-[#a49bcb] border border-y-gray-900 border-x-gray-500 z-10 rounded shadow-md" />
-                        <div className="absolute right-[30%] top-1/2 -translate-y-1/2 h-16 w-3.5 bg-[#a49bcb] border border-y-gray-900 border-x-gray-500 z-10 rounded shadow-md" />
+                        <div className="absolute left-[30%] top-1/2 -translate-y-1/2 h-12 w-3 bg-[#a49bcb] border border-y-gray-900 border-x-gray-500 z-10 rounded shadow-sm" />
+                        <div className="absolute right-[30%] top-1/2 -translate-y-1/2 h-12 w-3 bg-[#a49bcb] border border-y-gray-900 border-x-gray-500 z-10 rounded shadow-sm" />
                         
                         {/* Center shaft portion */}
-                        <div className="absolute left-[31%] right-[31%] top-1/2 -translate-y-1/2 h-4 bg-gradient-to-b from-gray-700 to-gray-500 border-y border-gray-950" />
+                        <div className="absolute left-[31%] right-[31%] top-1/2 -translate-y-1/2 h-3 bg-gradient-to-b from-gray-700 to-gray-500 border-y border-gray-950" />
 
                         {/* Left Sleeve Loaded Plates (rendered outer-to-inner, mirroring right side) */}
                         <div className="absolute right-[71%] top-0 bottom-0 flex flex-row-reverse items-center z-20 pr-0.5 select-none">
@@ -1379,7 +1379,7 @@ export default function FitnessTab({
                   </div>
 
                   {/* Quick Clear controls */}
-                  <div className="flex gap-2.5 w-full border-t border-[#221d35] pt-5 mt-2 z-10 shrink-0 select-none">
+                  <div className="flex gap-2.5 w-full border-t border-[#221d35] pt-4 mt-4 z-10 shrink-0 select-none">
                     <button
                       onClick={() => setCalculatorPlates([])}
                       className="flex-1 bg-red-400/10 hover:bg-red-400/20 border border-red-400/20 text-red-400 rounded-xl py-2 font-mono text-[10px] uppercase font-bold tracking-wider cursor-pointer text-center active:scale-95 transition-all"

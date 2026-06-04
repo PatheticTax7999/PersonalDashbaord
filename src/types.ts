@@ -16,6 +16,20 @@ export interface Routine {
   id: string;
   name: string;
   exercises: Exercise[];
+  folderId?: string; // Customizable folder assignment
+}
+
+export interface RoutineFolder {
+  id: string;
+  name: string;
+}
+
+export interface AIDailyWorkout {
+  date: string; // YYYY-MM-DD
+  name: string;
+  durationMins: number;
+  exercises: Exercise[];
+  setsCount?: number;
 }
 
 export interface SetEntry {
@@ -97,6 +111,10 @@ export interface UserState {
   carbGoalPct?: number;
   fatGoalPct?: number;
   foodLog?: Record<string, FoodLogEntry[]>;
+
+  // AI workout and routing customizable folders extension
+  routineFolders?: RoutineFolder[];
+  aiDailyWorkout?: AIDailyWorkout;
 }
 
 export interface FoodLogEntry {

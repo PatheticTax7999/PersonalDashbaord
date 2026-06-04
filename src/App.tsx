@@ -46,6 +46,10 @@ const defaultState = (): UserState => ({
   carbGoalPct: 40,
   fatGoalPct: 30,
   foodLog: {},
+  routineFolders: [
+    { id: "folder-3", name: "My Routines" }
+  ],
+  aiDailyWorkout: undefined,
   waterConfig: {
     containerType: "glass",
     capacity: 250,
@@ -64,6 +68,7 @@ const defaultState = (): UserState => ({
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<"home" | "fitness" | "health" | "calendar">("home");
+  const [healthSubTab, setHealthSubTab] = useState<"hydration" | "weight" | "nutrition">("hydration");
   
   // Notification Permission State
   const [notifPermission, setNotifPermission] = useState<NotificationPermission>(() => getPermissionStatus());
@@ -90,6 +95,22 @@ export default function App() {
     if (cachedData) {
       try {
         const parsed = JSON.parse(cachedData);
+        if (parsed.routineFolders) {
+          parsed.routineFolders = parsed.routineFolders.filter(
+            (f: any) => f.id === "folder-3" || (f.id !== "folder-1" && f.id !== "folder-2")
+          );
+          if (parsed.routineFolders.length === 0) {
+            parsed.routineFolders = [{ id: "folder-3", name: "My Routines" }];
+          }
+        }
+        if (parsed.routines) {
+          parsed.routines = parsed.routines.map((r: any) => {
+            if (r.folderId === "folder-1" || r.folderId === "folder-2") {
+              return { ...r, folderId: "folder-3" };
+            }
+            return r;
+          });
+        }
         return {
           ...defaultState(),
           ...parsed
@@ -939,14 +960,14 @@ export default function App() {
     setActiveTab("fitness");
   };
 
-  const handleSaveRoutine = (id: string | null, name: string, exercises: Exercise[]) => {
+  const handleSaveRoutine = (id: string | null, name: string, exercises: Exercise[], folderId?: string) => {
     const copy = { ...userState };
     if (id) {
-      copy.routines = copy.routines.map(r => (r.id === id ? { ...r, name, exercises } : r));
+      copy.routines = copy.routines.map(r => (r.id === id ? { ...r, name, exercises, folderId: folderId ?? r.folderId } : r));
     } else {
       copy.routines = [
         ...copy.routines,
-        { id: Math.random().toString(36).slice(2, 9), name, exercises }
+        { id: Math.random().toString(36).slice(2, 9), name, exercises, folderId }
       ];
     }
     setUserState(copy);
@@ -1141,6 +1162,11 @@ export default function App() {
                 onLogFood={handleLogFood}
                 onRemoveFood={handleRemoveFood}
                 onUpdateCalorieTarget={handleUpdateCalorieTarget}
+                onNavigateToNutrition={() => {
+                  setActiveTab("health");
+                  setHealthSubTab("nutrition");
+                }}
+                onLogWater={handleLogWater}
               />
             )}
 
@@ -1155,6 +1181,10 @@ export default function App() {
                 onDeleteRoutine={handleDeleteRoutine}
                 onToggleLb={handleToggleLb}
                 onUpdateActiveWorkout={handleUpdateActiveWorkout}
+                onUpdateUserState={(updated) => {
+                  setUserState(updated);
+                  updateFirestore(updated);
+                }}
               />
             )}
 
@@ -1174,6 +1204,11 @@ export default function App() {
                 onLogWeight={handleLogWeight}
                 onRemoveWeight={handleRemoveWeight}
                 onUpdateWaterConfig={handleUpdateWaterConfig}
+                onLogFood={handleLogFood}
+                onRemoveFood={handleRemoveFood}
+                onUpdateCalorieTarget={handleUpdateCalorieTarget}
+                activeSubTab={healthSubTab}
+                onSubTabChange={setHealthSubTab}
               />
             )}
 

@@ -846,6 +846,115 @@ Return ONLY valid JSON:
     }
   });
 
+  // API router for AI-generated daily fitness workout targeting lacking muscle groups
+  app.post("/api/fitness/generate-daily-workout", async (req, res) => {
+    try {
+      const { completedWorkouts, useLb } = req.body;
+      const weightUnit = useLb ? "lb" : "kg";
+
+      const workoutsSummary = completedWorkouts && completedWorkouts.length > 0
+        ? completedWorkouts.map((w: any) => `- Date: ${w.date}, Name: "${w.name}", Exercises: ${w.exercises.map((e: any) => `${e.name} (${e.setsCount} sets)`).join(", ")}`).join("\n")
+        : "No workouts completed in the last 7 days.";
+
+      const prompt = `Based on the following recent training history (past 7 days):
+${workoutsSummary}
+
+Determine which primary muscle groups (e.g. Chest, Back, Shoulders, Legs, Arms, Core) are lacking or under-trained because they are absent or low in volume in these recent workouts.
+Create a tailored training workout (12-18 total sets, 45-60 min estimated) composed of 4 to 6 exercises focusing heavily on those lacking muscle groups to maintain balanced physical growth.
+If there is no training history, create a high-quality "Full Body Starter" or "Upper Body Focus" workout.
+
+Return ONLY a valid raw JSON object, do not wrap in markdown or backticks, with the matching structure:
+{
+  "name": "Focus: Back & Pull (Lacking)",
+  "setsCount": 14,
+  "durationMins": 55,
+  "exercises": [
+    { "name": "Lat Pulldown", "notes": "4 sets x 10 reps" },
+    { "name": "Iso-Lateral Low Row", "notes": "3 sets x 12 reps" },
+    { "name": "Straight Arm Pulldown", "notes": "3 sets x 12 reps" },
+    { "name": "Hammer Curl", "notes": "4 sets x 10-12 reps" }
+  ]
+}`;
+
+      const ai = getGoogleGenAI();
+      const reply = await generateCoachResponse(
+        ai,
+        [{ role: "user", parts: [{ text: prompt }] }],
+        "You are an expert physical training programmer holding an advanced degree in Kinesiology. You design precise progressive overload plans and output ONLY clean raw JSON."
+      );
+
+      let cleaned = (reply || "").trim();
+      if (cleaned.startsWith("```json")) {
+        cleaned = cleaned.substring(7);
+      } else if (cleaned.startsWith("```")) {
+        cleaned = cleaned.substring(3);
+      }
+      if (cleaned.endsWith("```")) {
+        cleaned = cleaned.substring(0, cleaned.length - 3);
+      }
+      cleaned = cleaned.trim();
+
+      const parsed = JSON.parse(cleaned);
+      res.json(parsed);
+    } catch (err: any) {
+      console.error("Daily Workout Generation API Error:", err);
+      // Fallback response so the app never hangs
+      res.json({
+        name: "Full Body Balanced",
+        setsCount: 15,
+        durationMins: 60,
+        exercises: [
+          { name: "Bench Press", notes: "3 sets x 8-12 reps" },
+          { name: "Lat Pulldown", notes: "3 sets x 10-12 reps" },
+          { name: "Squats", notes: "3 sets x 8-10 reps" },
+          { name: "Overhead Press", notes: "3 sets x 10 reps" },
+          { name: "Bicep Curl", notes: "3 sets x 12 reps" }
+        ]
+      });
+    }
+  });
+
+  // API router to generate personalized coaching tips for progressive overload after a completed workout
+  app.post("/api/fitness/generate-workout-tips", async (req, res) => {
+    try {
+      const { lastWorkout, useLb } = req.body;
+      const weightUnit = useLb ? "lb" : "kg";
+
+      if (!lastWorkout) {
+        return res.status(400).json({ error: "lastWorkout parameter is required" });
+      }
+
+      const exerciseSummary = lastWorkout.exercises && lastWorkout.exercises.length > 0
+        ? lastWorkout.exercises.map((e: any) => `- ${e.name}: ${e.setsCount} sets x max weight ${e.maxWeight}${weightUnit} (${e.reps} reps)`).join("\n")
+        : "No exercises completed.";
+
+      const prompt = `The user has just completed a training workout session:
+Session Name: "${lastWorkout.name}"
+Duration: ${lastWorkout.durationMinutes} minutes
+Exercises completed:
+${exerciseSummary}
+
+As an elite AI athletic coach, analyze this workout performance and give 3 highly-actionable, concise progressive overload tips for their next workout to push their growth.
+For example, if they did Bench Press at 100kg for 12 reps, tell them: "You smashed 100kg Bench for 12 reps. Next session, overload it: add 2.5kg to each side and aim for 6-8 heavy power reps."
+Apply similar specific, numerical overload recommendations to their other exercises.
+Format your response as a bulleted list of 3 direct tips. Keep the tone strong, encouraging, and scientific. Max length 120 words total.`;
+
+      const ai = getGoogleGenAI();
+      const reply = await generateCoachResponse(
+        ai,
+        [{ role: "user", parts: [{ text: prompt }] }],
+        "You are an inspiring high-performance athletic trainer specializing in mechanical tension and progressive overload."
+      );
+
+      res.json({ tips: (reply || "").trim() });
+    } catch (err: any) {
+      console.error("Workout tips generation API error:", err);
+      res.json({
+        tips: "• Fantastic work finishing your session! Ensure you hydrate sufficiently and ingest 30-40g of high-quality protein within the next 2 hours.\n• Aim to add 1 rep or 1kg of weight to your main exercises next session to force neural and muscular adaptation.\n• Focus on a controlled 3-second eccentric phase on all movements to maximize structural hypertrophy."
+      });
+    }
+  });
+
   // API router for Food Keyword Search supporting OpenFoodFacts and the Australian Food Composition Database (AFCD)
   app.get("/api/food/search", async (req, res) => {
     try {

@@ -48,6 +48,8 @@ interface HomeTabProps {
   onLogFood?: (name: string, calories: number, protein: number, carbs: number, fat: number, barcode?: string, quantity?: number) => void;
   onRemoveFood?: (id: string) => void;
   onUpdateCalorieTarget?: (calorieGoal: number, proteinGoalPct: number, carbGoalPct: number, fatGoalPct: number) => void;
+  onNavigateToNutrition?: () => void;
+  onLogWater?: (action: "increment" | "decrement") => void;
 }
 
 export default function HomeTab({
@@ -70,7 +72,9 @@ export default function HomeTab({
   onMoveGoal,
   onLogFood,
   onRemoveFood,
-  onUpdateCalorieTarget
+  onUpdateCalorieTarget,
+  onNavigateToNutrition,
+  onLogWater
 }: HomeTabProps) {
   const [now, setNow] = useState(new Date());
   const [newTodayText, setNewTodayText] = useState("");
@@ -443,7 +447,13 @@ export default function HomeTab({
                 animate={{ x: 0, opacity: 1 }}
                 exit={{ x: -60, opacity: 0 }}
                 transition={{ duration: 0.22, ease: "easeOut" }}
-                onClick={() => setShowNutritionModal(true)}
+                onClick={() => {
+                  if (onNavigateToNutrition) {
+                    onNavigateToNutrition();
+                  } else {
+                    setShowNutritionModal(true);
+                  }
+                }}
                 className="relative flex items-center justify-center cursor-pointer hover:scale-[1.02] active:scale-[0.98] transition-transform"
                 style={{ width: size, height: size }}
                 title="Tap to review daily nutrition details"
@@ -501,7 +511,11 @@ export default function HomeTab({
 
         {/* Triple micro macro circles row to give instant feedback (conforming to first request sidecar macro data display style) */}
         {activeWheelPage === "calories" && (
-          <div className="grid grid-cols-3 gap-6 my-2 w-full max-w-sm px-6 bg-[#13111f]/60 border border-[#231e3d] rounded-2xl py-3 animate-in fade-in slide-in-from-bottom-2 duration-200">
+          <div 
+            onClick={() => onNavigateToNutrition?.()}
+            className="grid grid-cols-3 gap-6 my-2 w-full max-w-sm px-6 bg-[#13111f]/60 hover:bg-[#1c1830]/80 border border-[#231e3d] hover:border-pink-500/20 rounded-2xl py-3 cursor-pointer hover:scale-[1.01] active:scale-[0.99] transition-all animate-in fade-in slide-in-from-bottom-2 duration-200"
+            title="Tap to view nutrition details in Health tab"
+          >
             {/* Protein */}
             <div className="flex flex-col items-center">
               <span className="text-[8px] font-mono text-indigo-300 font-bold uppercase tracking-wider block">PROTEIN</span>
@@ -556,6 +570,51 @@ export default function HomeTab({
             title="Caloric balance view"
           />
         </div>
+
+        {/* Micro Hydration Shortcut Capsule - Conforming to third request */}
+        {(() => {
+          const tKey = new Date().toISOString().slice(0, 10);
+          const wConf = userState.waterConfig || { containerType: "glass", capacity: 250, capacityUnit: "ml" };
+          const getCapMl = (cap: number, unit: string): number => {
+            if (unit === "lt") return cap * 1000;
+            if (unit === "oz") return cap * 29.5735;
+            return cap;
+          };
+          const unitSzMl = getCapMl(wConf.capacity || 250, wConf.capacityUnit || "ml");
+          const uDone = userState.waterLog?.[tKey] || 0;
+          const mLitDone = uDone * unitSzMl;
+          const tGoalMl = userState.waterGoal || 2000;
+          const wPercent = tGoalMl > 0 ? Math.min(100, Math.round((mLitDone / tGoalMl) * 100)) : 0;
+
+          return (
+            <div className="mt-2.5 flex items-center justify-center pointer-events-auto">
+              <div className="flex items-center gap-2 bg-[#141224] border border-[#231d3d] hover:border-[#3ab4f2]/25 rounded-full py-1.5 px-3.5 font-mono text-[9.5px] text-[#9991b8] transition-all duration-150">
+                <span className="text-[#3ab4f2] text-[10px]">💧</span>
+                <span className="font-bold text-[#e8e3f8]">{Math.round(mLitDone)} <span className="text-[#6b6485] font-normal">/ {tGoalMl} ml</span></span>
+                <span className="text-[8px] text-[#6b6485]">({wPercent}%)</span>
+                <div className="flex items-center gap-1 border-l border-[#221d37] pl-2 ml-0.5">
+                  <button
+                    type="button"
+                    onClick={() => onLogWater?.("decrement")}
+                    disabled={uDone <= 0}
+                    className="w-4 h-4 rounded-full bg-[#1e1a35] border border-[#2c264d] hover:border-red-500/30 hover:bg-red-500/10 text-gray-400 hover:text-red-400 flex items-center justify-center font-bold font-sans text-[10px] active:scale-90 transition-all disabled:opacity-20 cursor-pointer"
+                    title={`Minus 1 ${wConf.containerType || "glass"}`}
+                  >
+                    -
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onLogWater?.("increment")}
+                    className="w-4 h-4 rounded-full bg-[#1e1a35] border border-[#2c264d] hover:border-[#3ab4f2]/35 hover:bg-[#3ab4f2]/10 text-[#3ab4f2] flex items-center justify-center font-bold font-sans text-[10px] active:scale-90 transition-all cursor-pointer"
+                    title={`Plus 1 ${wConf.containerType || "glass"}`}
+                  >
+                    +
+                  </button>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
       </div>
 
       {/* DETAILED DAILY NUTRITION AND MEALS LIST MODAL OVERLAY (Style of image 2) */}

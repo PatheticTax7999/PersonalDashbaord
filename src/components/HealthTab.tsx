@@ -30,6 +30,11 @@ interface HealthTabProps {
   onRequestNotifPermission: () => Promise<void>;
   onTriggerTestNotification: () => void;
   onUpdateWaterConfig?: (config: WaterConfig) => void;
+  onLogFood?: (name: string, calories: number, protein: number, carbs: number, fat: number, barcode?: string, quantity?: number) => void;
+  onRemoveFood?: (id: string) => void;
+  onUpdateCalorieTarget?: (calorieGoal: number, proteinGoalPct: number, carbGoalPct: number, fatGoalPct: number) => void;
+  activeSubTab?: "hydration" | "weight" | "nutrition";
+  onSubTabChange?: (tab: "hydration" | "weight" | "nutrition") => void;
 }
 
 export default function HealthTab({
@@ -46,9 +51,52 @@ export default function HealthTab({
   notifPermission,
   onRequestNotifPermission,
   onTriggerTestNotification,
-  onUpdateWaterConfig
+  onUpdateWaterConfig,
+  onLogFood,
+  onRemoveFood,
+  onUpdateCalorieTarget,
+  activeSubTab,
+  onSubTabChange
 }: HealthTabProps) {
-  const [subTab, setSubTab] = useState<"hydration" | "weight">("hydration");
+  const [localSubTab, setLocalSubTab] = useState<"hydration" | "weight" | "nutrition">("hydration");
+  const currentSubTab = activeSubTab !== undefined ? activeSubTab : localSubTab;
+
+  const changeSubTab = (newTab: "hydration" | "weight" | "nutrition") => {
+    if (onSubTabChange) {
+      onSubTabChange(newTab);
+    } else {
+      setLocalSubTab(newTab);
+    }
+  };
+
+  // Nutrition state variables
+  const [innerFoodSearch, setInnerFoodSearch] = useState("");
+  const [innerFoodSearchDb, setInnerFoodSearchDb] = useState<"all" | "afcd" | "off">("all");
+  const [innerSearchResults, setInnerSearchResults] = useState<any[]>([]);
+  const [isInnerSearching, setIsInnerSearching] = useState(false);
+  const [innerSelectedProduct, setInnerSelectedProduct] = useState<any | null>(null);
+  const [innerMultiplier, setInnerMultiplier] = useState(1);
+  const [innerSearchError, setInnerSearchError] = useState("");
+
+  // Calorie & macro trackers
+  const todayDateStr = new Date().toDateString();
+  const foodTodayItems = userState.foodLog?.[todayDateStr] || [];
+  
+  const calGoal = userState.calorieGoal || 2000;
+  const pPct = userState.proteinGoalPct || 30;
+  const cPct = userState.carbGoalPct || 40;
+  const fPct = userState.fatGoalPct || 30;
+  
+  const protGramsGoal = Math.round((calGoal * (pPct / 100)) / 4);
+  const carbGramsGoal = Math.round((calGoal * (cPct / 100)) / 4);
+  const fatGramsGoal = Math.round((calGoal * (fPct / 100)) / 9);
+  
+  const calsConsumed = foodTodayItems.reduce((sum, f) => sum + (f.calories * (f.quantity || 1)), 0);
+  const protConsumed = Math.round(foodTodayItems.reduce((sum, f) => sum + ((f.protein || 0) * (f.quantity || 1)), 0));
+  const carbsConsumed = Math.round(foodTodayItems.reduce((sum, f) => sum + ((f.carbs || 0) * (f.quantity || 1)), 0));
+  const fatConsumed = Math.round(foodTodayItems.reduce((sum, f) => sum + ((f.fat || 0) * (f.quantity || 1)), 0));
+  
+  const calorieProgress = calGoal > 0 ? Math.min(1, calsConsumed / calGoal) : 0;
 
   // Track hydration volume change to trigger liquid sloshing
   const [isSloshing, setIsSloshing] = useState(false);
@@ -438,9 +486,9 @@ export default function HealthTab({
       {/* Sub-tab selection pill */}
       <div className="flex bg-[#17142a] border border-[#221d35] rounded-xl p-1 font-mono text-[11px] font-semibold gap-1">
         <button
-          onClick={() => setSubTab("hydration")}
+          onClick={() => changeSubTab("hydration")}
           className={`flex-1 text-center py-2 rounded-lg cursor-pointer transition-all ${
-            subTab === "hydration"
+            currentSubTab === "hydration"
               ? "bg-gradient-to-r from-[#3ab4f2] to-[#1e7fc4] text-[#0d0b14]"
               : "text-[#9991b8] hover:text-white"
           }`}
@@ -448,9 +496,19 @@ export default function HealthTab({
           💧 Hydration
         </button>
         <button
-          onClick={() => setSubTab("weight")}
+          onClick={() => changeSubTab("nutrition")}
           className={`flex-1 text-center py-2 rounded-lg cursor-pointer transition-all ${
-            subTab === "weight"
+            currentSubTab === "nutrition"
+              ? "bg-gradient-to-r from-[#f43f5e] to-pink-600 text-white"
+              : "text-[#9991b8] hover:text-white"
+          }`}
+        >
+          🍳 Nutrition
+        </button>
+        <button
+          onClick={() => changeSubTab("weight")}
+          className={`flex-1 text-center py-2 rounded-lg cursor-pointer transition-all ${
+            currentSubTab === "weight"
               ? "bg-gradient-to-r from-[#f0c972] to-[#e07b3f] text-[#0d0b14]"
               : "text-[#9991b8] hover:text-white"
           }`}
@@ -460,7 +518,7 @@ export default function HealthTab({
       </div>
 
       {/* HYDRATION SCREEN */}
-      {subTab === "hydration" && (
+      {currentSubTab === "hydration" && (
         <>
           {/* Water card logger */}
           <div className="bg-[#13111f] border border-[#2a2440] p-5 rounded-2xl shadow">
@@ -1090,7 +1148,7 @@ export default function HealthTab({
       )}
 
       {/* WEIGHT TRACKER SCREEN */}
-      {subTab === "weight" && (
+      {currentSubTab === "weight" && (
         <>
           {/* Quick logger widget */}
           <div className="bg-[#13111f] border border-[#2a2440] p-5 rounded-2xl shadow">
@@ -1258,6 +1316,312 @@ export default function HealthTab({
               </div>
             </>
           )}
+        </>
+      )}
+
+      {/* NUTRITION SCREEN */}
+      {currentSubTab === "nutrition" && (
+        <>
+          {/* Dynamic Stacked Macro Goal status cards */}
+          <div className="bg-[#13111f] border border-[#2a2440] p-5 rounded-2xl shadow-sm text-left">
+            <span className="text-[10px] text-[#6b6485] font-mono tracking-wider uppercase block mb-3">Today's Daily Caloric Balance</span>
+
+            {/* Calorie Progress Indicator */}
+            <div className="flex justify-between items-baseline mb-2">
+              <span className="font-bebas text-2xl text-pink-300 font-bold tracking-wide">
+                {Math.round(calsConsumed).toLocaleString()} / {calGoal.toLocaleString()} kcal
+              </span>
+              <span className="text-[10px] text-[#6b6485] font-mono font-bold">
+                {Math.round(calorieProgress * 100)}% Consumed
+              </span>
+            </div>
+
+            {/* Micro calorie bar */}
+            <div className="h-2.5 bg-[#141125] border border-[#231c3b] rounded-full overflow-hidden mb-5">
+              <div
+                className="h-full bg-gradient-to-r from-pink-500 to-[#e07b3f] transition-all duration-500"
+                style={{ width: `${calorieProgress * 100}%` }}
+              />
+            </div>
+            
+            <span className="text-[10px] text-[#6b6485] font-mono tracking-wider uppercase block mb-3">Daily Energy Splitting Targets</span>
+            
+            {/* Horizontal high accuracy stacked macros representation */}
+            <div className="h-4 bg-[#1a1728] rounded-full overflow-hidden flex border border-[#231c3a] select-none mb-4 my-1">
+              {calorieProgress > 0 ? (
+                <>
+                  <div 
+                    style={{ width: `${Math.round((protConsumed * 4 / (calsConsumed || 1)) * 100)}%` }} 
+                    className="bg-indigo-400 h-full transition-all" 
+                    title={`Protein contribution: ${Math.round(protConsumed * 4)} kcal`}
+                  />
+                  <div 
+                    style={{ width: `${Math.round((carbsConsumed * 4 / (calsConsumed || 1)) * 100)}%` }} 
+                    className="bg-green-400 h-full transition-all" 
+                    title={`Carbohydrates contribution: ${Math.round(carbsConsumed * 4)} kcal`}
+                  />
+                  <div 
+                    style={{ width: `${Math.round((fatConsumed * 9 / (calsConsumed || 1)) * 100)}%` }} 
+                    className="bg-amber-400 h-full transition-all" 
+                    title={`Fat contribution: ${Math.round(fatConsumed * 9)} kcal`}
+                  />
+                </>
+              ) : (
+                <div className="w-full h-full bg-[#1e1a30] flex items-center justify-center">
+                  <span className="text-[8px] font-mono text-[#6b6485] uppercase animate-pulse">Waiting for meal logs...</span>
+                </div>
+              )}
+            </div>
+
+            <div className="grid grid-cols-3 gap-3 font-mono text-xs text-[#e8e3f8] text-center">
+              <div className="bg-[#17142a] border border-indigo-500/15 p-2.5 rounded-xl">
+                <span className="text-[8.5px] text-indigo-300 block font-bold">PROTEIN</span>
+                <span className="text-sm font-bold block mt-1">{protConsumed}g <span className="text-[#6b6485] text-[9.5px]">/ {protGramsGoal}g</span></span>
+              </div>
+              <div className="bg-[#17142a] border border-green-500/15 p-2.5 rounded-xl">
+                <span className="text-[8.5px] text-green-300 block font-bold">CARBS</span>
+                <span className="text-sm font-bold block mt-1">{carbsConsumed}g <span className="text-[#6b6485] text-[9.5px]">/ {carbGramsGoal}g</span></span>
+              </div>
+              <div className="bg-[#17142a] border border-amber-500/15 p-2.5 rounded-xl">
+                <span className="text-[8.5px] text-amber-300 block font-bold">LIPID FAT</span>
+                <span className="text-sm font-bold block mt-1">{fatConsumed}g <span className="text-[#6b6485] text-[9.5px]">/ {fatGramsGoal}g</span></span>
+              </div>
+            </div>
+          </div>
+
+          {/* SEARCH & ADD DIRECTLY FROM JOURNAL FOR ULTRA-FAST COMPACT WORKFLOW */}
+          <div className="bg-[#13111f] border border-[#2a2440] rounded-2xl p-5 shadow-sm text-left">
+            <div className="flex flex-col gap-2 mb-3">
+              <div className="flex justify-between items-center">
+                <span className="text-[10px] text-[#6b6485] font-mono tracking-wider uppercase">Direct Database search lookup</span>
+                <span className="text-[7.5px] font-mono bg-pink-500/10 text-pink-300 px-2 py-0.5 rounded-full uppercase font-bold text-[7.5px]">Powered by AFCD & OFF</span>
+              </div>
+              
+              {/* Database Source Config Bar */}
+              <div className="flex items-center justify-between bg-[#0e0c17] border border-[#231d3d] rounded-xl p-1.5">
+                <span className="text-[9px] font-mono text-[#6b6485] pl-1.5 uppercase font-bold">Database Source:</span>
+                <div className="flex gap-1">
+                   {(["all", "afcd", "off"] as const).map((db) => (
+                     <button
+                       key={db}
+                       type="button"
+                       onClick={() => setInnerFoodSearchDb(db)}
+                       className={`px-2 py-1 rounded-lg text-[9px] font-mono font-bold uppercase transition-all cursor-pointer ${
+                         innerFoodSearchDb === db
+                           ? "bg-[#252044] text-pink-300 border border-pink-300/30"
+                           : "text-[#6b6485] hover:text-[#e8e3f8] border border-transparent"
+                       }`}
+                     >
+                       {db === "all" ? "All" : db === "afcd" ? "AFCD (Aust)" : "OpenFoodFacts"}
+                     </button>
+                   ))}
+                </div>
+              </div>
+            </div>
+
+            <form onSubmit={async (e) => {
+              e.preventDefault();
+              if (!innerFoodSearch.trim()) return;
+              setIsInnerSearching(true);
+              setInnerSearchError("");
+              try {
+                const res = await fetch(`/api/food/search?q=${encodeURIComponent(innerFoodSearch)}&db=${innerFoodSearchDb}`);
+                if (res.ok) {
+                  const data = await res.json();
+                  setInnerSearchResults(data || []);
+                } else {
+                  setInnerSearchError("Could not retrieve details. Limit reached.");
+                }
+              } catch (err) {
+                setInnerSearchError("Network failure.");
+              } finally {
+                setIsInnerSearching(false);
+              }
+            }} className="flex gap-2">
+              <input
+                type="text"
+                value={innerFoodSearch}
+                onChange={(e) => setInnerFoodSearch(e.target.value)}
+                placeholder="Search oatmeal, beef, salmon, yogurt..."
+                className="flex-1 bg-[#17142a] border border-[#2a2440] text-xs font-mono text-[#e8e3f8] placeholder-[#4d407a] rounded-xl px-3 py-2.5 focus:outline-none focus:border-pink-300"
+              />
+              <button
+                type="submit"
+                disabled={isInnerSearching}
+                className="px-4 py-2 bg-[#17142a]/80 border border-[#2c264c] hover:border-pink-300 text-pink-300 rounded-xl text-xs font-mono font-bold transition-all disabled:opacity-40"
+              >
+                Find
+              </button>
+            </form>
+
+            {innerSearchError && (
+              <p className="text-[9px] font-mono text-red-400 mt-2 text-center">{innerSearchError}</p>
+            )}
+
+            {innerSelectedProduct ? (
+              <div className="mt-3 bg-[#0d0b14] border border-[#2c264c] rounded-xl p-3.5 flex flex-col gap-3 animate-in fade-in zoom-in-95 duration-100">
+                <div className="flex justify-between items-start">
+                  <div>
+                    <span className="font-bebas text-sm text-pink-300 block">{innerSelectedProduct.brand || "Generic Food"}</span>
+                    <span className="text-xs font-bold text-white block mt-0.5">{innerSelectedProduct.name}</span>
+                  </div>
+                  <button onClick={() => setInnerSelectedProduct(null)} className="text-[10px] text-gray-500 hover:text-white cursor-pointer font-bold">×</button>
+                </div>
+
+                <div className="grid grid-cols-4 gap-1 text-center font-mono text-[9px] border-y border-[#2c264c] py-2">
+                  <div>
+                    <span className="text-[#6b6485] block text-[7px]">CALORIES</span>
+                    <span className="text-[#e8e3f8] font-bold block mt-0.5">{Math.round(innerSelectedProduct.calories * innerMultiplier)} kcal</span>
+                  </div>
+                  <div>
+                    <span className="text-indigo-300 block text-[7px]">PROTEIN</span>
+                    <span className="text-white font-bold block mt-0.5">{Math.round(innerSelectedProduct.protein * innerMultiplier)}g</span>
+                  </div>
+                  <div>
+                    <span className="text-green-300 block text-[7px]">CARBS</span>
+                    <span className="text-white font-bold block mt-0.5">{Math.round(innerSelectedProduct.carbs * innerMultiplier)}g</span>
+                  </div>
+                  <div>
+                    <span className="text-amber-300 block text-[7px]">FAT</span>
+                    <span className="text-white font-bold block mt-0.5">{Math.round(innerSelectedProduct.fat * innerMultiplier)}g</span>
+                  </div>
+                </div>
+
+                <div className="flex justify-between items-center bg-[#13111f]/80 p-2 border border-[#2c264c]/40 rounded-lg">
+                  <span className="text-[8px] font-mono text-[#9991b8] uppercase">Multiplier:</span>
+                  <div className="flex items-center gap-1.5 font-mono text-xs">
+                    <button type="button" onClick={() => setInnerMultiplier(p => Math.max(0.25, p - 0.25))} className="w-5 h-5 bg-[#17142a] border border-[#2c264d] text-white rounded text-center flex items-center justify-center">-</button>
+                    <span className="font-bold min-w-[30px] text-center text-pink-300">{innerMultiplier.toFixed(2)}x</span>
+                    <button type="button" onClick={() => setInnerMultiplier(p => p + 0.25)} className="w-5 h-5 bg-[#17142a] border border-[#2c264d] text-white rounded text-center flex items-center justify-center">+</button>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    onLogFood?.(
+                      innerSelectedProduct.name,
+                      innerSelectedProduct.calories,
+                      innerSelectedProduct.protein,
+                      innerSelectedProduct.carbs,
+                      innerSelectedProduct.fat,
+                      innerSelectedProduct.barcode,
+                      innerMultiplier
+                    );
+                    setInnerSelectedProduct(null);
+                    setInnerFoodSearch("");
+                    setInnerSearchResults([]);
+                  }}
+                  className="w-full bg-pink-500 hover:bg-pink-400 text-white py-2 rounded-lg font-mono font-bold text-xs cursor-pointer uppercase transition-all shadow-md mt-1"
+                >
+                  LOG MEAL IMMEDIATELY
+                </button>
+              </div>
+            ) : (
+              innerSearchResults.length > 0 && (
+                <div className="mt-3 max-h-36 overflow-y-auto flex flex-col gap-1 pr-1 border-t border-[#2c264d]/40 pt-2.5">
+                  {innerSearchResults.map((prod, idx) => (
+                    <button
+                      key={idx}
+                      type="button"
+                      onClick={() => {
+                        setInnerSelectedProduct(prod);
+                        setInnerMultiplier(1);
+                      }}
+                      className="bg-[#17142a]/80 hover:bg-[#1a172e] border border-[#231e3d] text-left p-2 rounded-xl flex justify-between items-center transition-all cursor-pointer hover:translate-x-0.5"
+                    >
+                      <div className="truncate flex-1 pr-2">
+                        <span className="text-[7.5px] font-mono font-semibold text-pink-400 uppercase tracking-wide block">{prod.brand}</span>
+                        <span className="font-bebas text-xs text-white block mt-0.5 truncate">{prod.name}</span>
+                      </div>
+                      <span className="text-[10px] font-mono text-[#fbcfe8] font-bold shrink-0">{prod.calories} kcal →</span>
+                    </button>
+                  ))}
+                </div>
+              )
+            )}
+
+            {isInnerSearching && (
+              <p className="text-[9.5px] font-mono text-[#6b6485] mt-2.5 text-center animate-pulse">Running OpenFoodFacts proxy lookup...</p>
+            )}
+          </div>
+
+          {/* LIST OF INTRODUCED MEALS */}
+          <div className="bg-[#13111f] border border-[#2a2440] rounded-2xl p-5 shadow-sm text-left">
+            <div className="flex justify-between items-baseline mb-3">
+              <span className="text-[10px] text-[#6b6485] font-mono tracking-wider uppercase">
+                Meals Logged ({foodTodayItems.length})
+              </span>
+              <span className="text-[9.5px] font-mono font-bold text-pink-300">
+                Total: {Math.round(calsConsumed)} kcal
+              </span>
+            </div>
+
+            <div className="flex flex-col gap-2.5">
+              {foodTodayItems.length === 0 ? (
+                <div className="text-center py-8 bg-[#17142a]/40 border border-dashed border-[#231e3d] rounded-2xl p-4">
+                  <span className="text-2xl block mb-2 opacity-50 font-sans leading-none">🥣</span>
+                  <p className="text-[10px] font-mono text-[#6b6485] leading-relaxed">
+                    No food recorded today. Type keyword search above to fetch nutrition parameters and log meals details.
+                  </p>
+                </div>
+              ) : (
+                foodTodayItems.map((item) => (
+                  <div 
+                    key={item.id}
+                    className="bg-[#17142a] border border-[#2a2440] hover:border-pink-300/20 rounded-2xl p-3 flex justify-between items-center gap-3 transition-colors hover:bg-[#1a172f]"
+                  >
+                    <div className="min-w-0 flex-1 flex gap-2.5 items-center">
+                      <div className="w-8 h-8 rounded-full bg-pink-500/10 border border-pink-500/15 flex items-center justify-center text-sm shrink-0">
+                        {item.name.toLowerCase().includes("milk") || item.name.toLowerCase().includes("shake") || item.name.toLowerCase().includes("smoothie") ? "🥛" :
+                         item.name.toLowerCase().includes("rice") || item.name.toLowerCase().includes("oatmeal") || item.name.toLowerCase().includes("carb") ? "🥣" :
+                         item.name.toLowerCase().includes("chicken") || item.name.toLowerCase().includes("beef") || item.name.toLowerCase().includes("turkey") ? "🥩" :
+                         item.name.toLowerCase().includes("salad") || item.name.toLowerCase().includes("vegetable") || item.name.toLowerCase().includes("cucumber") ? "🥗" :
+                         item.name.toLowerCase().includes("fruit") || item.name.toLowerCase().includes("banana") || item.name.toLowerCase().includes("apple") ? "🍎" : "🍏"}
+                      </div>
+                      
+                      <div className="min-w-0 flex-1 text-left">
+                        <span className="font-bebas text-sm text-[#e8e3f8] leading-tight block truncate uppercase tracking-wider">{item.name}</span>
+                        <div className="flex items-center gap-1.5 flex-wrap font-mono text-[8.5px] text-[#6b6485] mt-1">
+                          <span className="text-indigo-300/85">P: {Math.round((item.protein || 0) * (item.quantity || 1))}g</span>
+                          <span>•</span>
+                          <span className="text-green-300/85">C: {Math.round((item.carbs || 0) * (item.quantity || 1))}g</span>
+                          <span>•</span>
+                          <span className="text-amber-300/85">F: {Math.round((item.fat || 0) * (item.quantity || 1))}g</span>
+                          {item.quantity && item.quantity !== 1 && (
+                            <>
+                              <span>•</span>
+                              <span className="text-pink-300 font-bold">{item.quantity}x serv</span>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Calories and Delete option */}
+                    <div className="flex items-center gap-3 font-mono">
+                      <div className="text-right shrink-0">
+                        <span className="text-xs font-bold text-[#fbcfe8] block font-bebas tracking-wide">+{Math.round(item.calories * (item.quantity || 1))} kcal</span>
+                        <span className="text-[7.5px] text-[#6b6485] block mt-0.5">{item.loggedAt || "08:15 AM"}</span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (confirm(`Remove "${item.name}" from your daily diet log?`)) {
+                            onRemoveFood?.(item.id);
+                          }
+                        }}
+                        className="text-xs text-[#ff5c5c] hover:text-[#ff3b3b] p-1 hover:bg-red-500/10 rounded-lg cursor-pointer transition-colors text-center w-5 h-5 flex items-center justify-center font-bold"
+                        title="Delete meal entry"
+                      >
+                        ×
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
         </>
       )}
 

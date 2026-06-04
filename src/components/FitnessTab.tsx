@@ -864,7 +864,7 @@ export default function FitnessTab({
     const { routine, sets } = activeWorkout;
 
     return (
-      <div className={`w-full max-w-md mx-auto py-6 px-4 flex flex-col gap-5 text-left transition-all ${activeInput && !showPlateCalculator ? "pb-[380px]" : "pb-28"}`}>
+      <div className={`w-full max-w-md mx-auto py-6 px-4 flex flex-col gap-5 text-left transition-all ${activeInput && !showPlateCalculator ? "pb-[450px]" : "pb-28"}`}>
         {/* Persistent top progress HUD with Timer & Exit control */}
         <div className="flex justify-between items-center bg-[#13111f] border border-[#2a2440] px-4 py-3.5 rounded-2xl gap-3">
           <div className="flex items-center gap-3 min-w-0">
@@ -1171,7 +1171,7 @@ export default function FitnessTab({
               animate={{ y: 0, opacity: 1 }}
               exit={{ y: 200, opacity: 0 }}
               transition={{ type: "tween", duration: 0.2 }}
-              className="fixed bottom-0 left-0 right-0 z-40 bg-[#13111f]/95 backdrop-blur-md border-t-2 border-[#2a2440] p-4 pb-6 shadow-[0_-10px_30px_rgba(0,0,0,0.5)] max-w-md mx-auto rounded-t-3xl text-left font-sans"
+              className="fixed bottom-16 left-0 right-0 z-40 bg-[#13111f]/95 backdrop-blur-md border-t-2 border-[#2a2440] p-4 pb-4 shadow-[0_-10px_30px_rgba(0,0,0,0.5)] max-w-md mx-auto rounded-t-3xl text-left font-sans"
             >
               <div className="flex justify-between items-center mb-3">
                 <div className="flex items-center gap-1 text-[11px] font-mono text-gray-400">

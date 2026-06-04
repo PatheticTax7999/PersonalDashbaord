@@ -159,6 +159,13 @@ export default function FitnessTab({
   const [expandedFolders, setExpandedFolders] = useState<Record<string, boolean>>({
     "folder-3": true
   });
+
+  // Custom keyboard & plate calculator state
+  const [activeInput, setActiveInput] = useState<{ exIdx: number; setIdx: number; field: "weight" | "reps" } | null>(null);
+  const [showPlateCalculator, setShowPlateCalculator] = useState(false);
+  const [calculatorBarWeight, setCalculatorBarWeight] = useState<number>(20); // standard bar default in kg
+  const [calculatorPlates, setCalculatorPlates] = useState<number[]>([]); // plates in kg (loading on one side of barbell, symmetric)
+  const [availablePlates, setAvailablePlates] = useState<number[]>([20, 15, 10, 5, 2.5, 1.25]); // standard Australian plate sizes in kg
   const [exercisesList, setExercisesList] = useState<any[]>(PREDEFINED_EXERCISES);
   const [isLoadingDb, setIsLoadingDb] = useState(false);
   const [dbLoadError, setDbLoadError] = useState(false);
@@ -198,6 +205,49 @@ export default function FitnessTab({
     aiTips: string;
     loadingTips: boolean;
   } | null>(null);
+
+  // Helpers for custom weight keyboard and barbell calculator
+  const handleKeyboardPress = (val: string) => {
+    if (!activeWorkout || !activeInput) return;
+    const { exIdx, setIdx, field } = activeInput;
+    const currentVal = activeWorkout.sets[exIdx]?.[setIdx]?.[field] || "";
+
+    let newVal = currentVal;
+    if (val === "BACKSPACE") {
+      newVal = currentVal.slice(0, -1);
+    } else if (val === ".") {
+      if (!currentVal.includes(".")) {
+        newVal = currentVal + ".";
+      }
+    } else {
+      newVal = currentVal + val;
+    }
+
+    handleUpdateActiveSetField(exIdx, setIdx, field, newVal);
+  };
+
+  const getPlateStyle = (kg: number) => {
+    if (kg >= 20) return { height: 110, width: 22, color: "bg-[#2f80ed] text-white" };
+    if (kg >= 15) return { height: 95, width: 20, color: "bg-[#f2c94c] text-black" };
+    if (kg >= 10) return { height: 80, width: 18, color: "bg-[#27ae60] text-white" };
+    if (kg >= 5) return { height: 65, width: 16, color: "bg-[#cbd5e1] text-black" };
+    if (kg >= 2.5) return { height: 50, width: 14, color: "bg-[#eb5757] text-white" };
+    if (kg >= 1.25) return { height: 40, width: 12, color: "bg-[#707070] text-white" };
+    
+    // Custom/Fallback sizing
+    const calculatedHeight = Math.min(110, Math.max(35, 35 + (kg * 3)));
+    const calculatedWidth = Math.min(22, Math.max(10, 10 + (kg / 2)));
+    return { height: calculatedHeight, width: calculatedWidth, color: "bg-[#10b981] text-white" };
+  };
+
+  const getCalculatorTotal = () => {
+    const sumPlates = calculatorPlates.reduce((sum, p) => sum + p, 0);
+    if (calculatorBarWeight === 0) {
+      return sumPlates;
+    } else {
+      return calculatorBarWeight + 2 * sumPlates;
+    }
+  };
 
   // Auto-generate daily workout at launch if missing for today
   useEffect(() => {
@@ -814,7 +864,7 @@ export default function FitnessTab({
     const { routine, sets } = activeWorkout;
 
     return (
-      <div className="w-full max-w-md mx-auto py-6 px-4 pb-28 flex flex-col gap-5 text-left">
+      <div className={`w-full max-w-md mx-auto py-6 px-4 flex flex-col gap-5 text-left transition-all ${activeInput && !showPlateCalculator ? "pb-[380px]" : "pb-28"}`}>
         {/* Persistent top progress HUD with Timer & Exit control */}
         <div className="flex justify-between items-center bg-[#13111f] border border-[#2a2440] px-4 py-3.5 rounded-2xl gap-3">
           <div className="flex items-center gap-3 min-w-0">
@@ -1009,22 +1059,38 @@ export default function FitnessTab({
 
                           {/* Weight Input */}
                           <input
-                            type="number"
+                            type="text"
+                            inputMode="none"
                             placeholder="0"
                             disabled={isChecked}
                             value={s.weight}
+                            onFocus={() => {
+                              setActiveInput({ exIdx, setIdx, field: "weight" });
+                            }}
                             onChange={(e) => handleUpdateActiveSetField(exIdx, setIdx, "weight", e.target.value)}
-                            className="w-full bg-[#1e1a30] border border-[#221d35] rounded-xl py-2 text-center font-mono text-xs text-white focus:outline-none focus:border-[#f0c972] disabled:opacity-40"
+                            className={`w-full bg-[#1e1a30] py-2 text-center font-mono text-xs text-white focus:outline-none rounded-xl transition-all ${
+                              activeInput?.exIdx === exIdx && activeInput?.setIdx === setIdx && activeInput?.field === "weight"
+                                ? "border-2 border-[#f0c972]"
+                                : "border border-[#221d35] hover:border-[#f0c972]/30"
+                            } disabled:opacity-40`}
                           />
 
                           {/* Reps Input */}
                           <input
-                            type="number"
+                            type="text"
+                            inputMode="none"
                             placeholder="0"
                             disabled={isChecked}
                             value={s.reps}
+                            onFocus={() => {
+                              setActiveInput({ exIdx, setIdx, field: "reps" });
+                            }}
                             onChange={(e) => handleUpdateActiveSetField(exIdx, setIdx, "reps", e.target.value)}
-                            className="w-full bg-[#1e1a30] border border-[#221d35] rounded-xl py-2 text-center font-mono text-xs text-white focus:outline-none focus:border-[#f0c972] disabled:opacity-40"
+                            className={`w-full bg-[#1e1a30] py-2 text-center font-mono text-xs text-white focus:outline-none rounded-xl transition-all ${
+                              activeInput?.exIdx === exIdx && activeInput?.setIdx === setIdx && activeInput?.field === "reps"
+                                ? "border-2 border-[#f0c972]"
+                                : "border border-[#221d35] hover:border-[#f0c972]/30"
+                            } disabled:opacity-40`}
                           />
 
                           {/* Checklist checkbox action */}
@@ -1096,6 +1162,349 @@ export default function FitnessTab({
             FINISH TRAINING SESSION  ✓
           </button>
         )}
+
+        {/* Elegant Custom Keyboard Panel */}
+        <AnimatePresence key="keyboard-presence">
+          {activeInput && !showPlateCalculator && (
+            <motion.div
+              initial={{ y: 200, opacity: 0 }}
+              animate={{ y: 0, opacity: 1 }}
+              exit={{ y: 200, opacity: 0 }}
+              transition={{ type: "tween", duration: 0.2 }}
+              className="fixed bottom-0 left-0 right-0 z-40 bg-[#13111f]/95 backdrop-blur-md border-t-2 border-[#2a2440] p-4 pb-6 shadow-[0_-10px_30px_rgba(0,0,0,0.5)] max-w-md mx-auto rounded-t-3xl text-left font-sans"
+            >
+              <div className="flex justify-between items-center mb-3">
+                <div className="flex items-center gap-1 text-[11px] font-mono text-gray-400">
+                  <span className="w-1.5 h-1.5 rounded-full bg-[#f0c972] animate-ping inline-block mr-1" />
+                  <span>Set {activeInput.setIdx + 1}: </span>
+                  <span className="text-[#f0c972] font-semibold uppercase">{activeInput.field === "weight" ? (userState.useLb ? "Weight (LBS)" : "Weight (KGS)") : "Reps count"}</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  {/* Backspace Button */}
+                  <button
+                    onClick={() => handleKeyboardPress("BACKSPACE")}
+                    className="px-3.5 py-1.5 bg-[#1c182d] border border-[#2a2440] rounded-xl font-mono text-xs text-white hover:border-red-400 hover:text-red-400 active:scale-95 transition-all cursor-pointer flex items-center justify-center gap-1"
+                  >
+                    <span>⌫</span>
+                    <span className="text-[10px]">Del</span>
+                  </button>
+                  {/* Done Button */}
+                  <button
+                    onClick={() => setActiveInput(null)}
+                    className="px-4 py-1.5 bg-gradient-to-r from-[#f0c972] to-[#e07b3f] rounded-xl font-mono text-xs font-bold text-[#0d0b14] active:scale-95 transition-all cursor-pointer"
+                  >
+                    Done ✓
+                  </button>
+                </div>
+              </div>
+
+              {/* 1-9 Grid with Bottom Left Calculator, 0, and Decimal */}
+              <div className="grid grid-cols-3 gap-2">
+                {["1", "2", "3", "4", "5", "6", "7", "8", "9"].map((key) => (
+                  <button
+                    key={key}
+                    onClick={() => handleKeyboardPress(key)}
+                    className="bg-[#1c182d] hover:bg-[#25203b] border border-[#2a2440] rounded-2xl py-3 font-mono text-xl font-bold text-white flex items-center justify-center active:scale-90 select-none cursor-pointer transition-colors"
+                  >
+                    {key}
+                  </button>
+                ))}
+                {/* Custom Bottom-Left Button to show Plate Calculator */}
+                <button
+                  onClick={() => {
+                    setShowPlateCalculator(true);
+                  }}
+                  className="bg-[#1a1c38] hover:bg-[#21264c] border border-[#303977] text-[#4285F4] hover:text-white rounded-2xl py-3 flex flex-col items-center justify-center active:scale-90 select-none cursor-pointer transition-all leading-tight"
+                >
+                  <span className="text-sm">⚖️</span>
+                  <span className="text-[9px] font-mono font-bold uppercase tracking-tighter mt-0.5">Plate Calc</span>
+                </button>
+
+                {/* 0 Key */}
+                <button
+                  onClick={() => handleKeyboardPress("0")}
+                  className="bg-[#1c182d] hover:bg-[#25203b] border border-[#2a2440] rounded-2xl py-3 font-mono text-xl font-bold text-white flex items-center justify-center active:scale-90 select-none cursor-pointer transition-colors"
+                >
+                  0
+                </button>
+
+                {/* Decimal Point Key */}
+                <button
+                  onClick={() => handleKeyboardPress(".")}
+                  className="bg-[#1c182d] hover:bg-[#25203b] border border-[#2a2440] rounded-2xl py-3 font-mono text-xl font-bold text-white flex items-center justify-center active:scale-90 select-none cursor-pointer transition-colors"
+                >
+                  .
+                </button>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Immersive Weight Plate Calculator Modal */}
+        <AnimatePresence key="calculator-presence">
+          {showPlateCalculator && (
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              transition={{ duration: 0.15 }}
+              className="fixed inset-0 z-50 bg-[#0d0b14] flex flex-col text-left overflow-hidden font-sans"
+            >
+              {/* Header */}
+              <div className="flex justify-between items-center px-4 py-4 border-b border-[#221d35] shrink-0">
+                <div className="flex items-center gap-2">
+                  <Scale className="w-5 h-5 text-[#f0c972]" />
+                  <div>
+                    <span className="font-bebas text-lg text-white block tracking-wider">Barbell Plate Calculator</span>
+                    <span className="text-[9px] font-mono text-[#9991b8] uppercase tracking-wider">Dynamic Sleeve Loading</span>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setShowPlateCalculator(false)}
+                  className="text-[#9991b8] hover:text-white p-1.5 bg-[#161424] rounded-lg cursor-pointer active:scale-95"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* Main Interactive Work Area */}
+              <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-5 pb-10">
+                
+                {/* visual barbell component block */}
+                <div className="bg-[#13111f] border border-[#2a2440] rounded-2xl p-5 flex flex-col items-center justify-center gap-4 relative overflow-hidden min-h-[220px]">
+                  {/* Total Weight Counter */}
+                  <div className="text-center">
+                    <span className="font-bebas text-4xl text-[#f0c972] tracking-wider block font-bold">
+                      {userState.useLb ? (getCalculatorTotal() * 2.20462).toFixed(1) : getCalculatorTotal().toFixed(1)}
+                      <span className="text-lg font-mono text-gray-400 ml-1.5">{userState.useLb ? "lb" : "kg"}</span>
+                    </span>
+                    <span className="font-mono text-[9px] text-[#9991b8] uppercase tracking-widest mt-0.5 block">
+                      {calculatorBarWeight === 0 ? "Single Stack total" : `Symmetric barbell (${userState.useLb ? Math.round(calculatorBarWeight * 2.20462) : calculatorBarWeight}${userState.useLb ? "lb" : "kg"} Bar + both sleeves loaded)`}
+                    </span>
+                  </div>
+
+                  {/* Visual Barbell representation with stacked plates */}
+                  <div className="w-full flex items-center justify-center h-32 relative mt-4">
+                    
+                    {/* If there is a bar */}
+                    {calculatorBarWeight > 0 ? (
+                      <>
+                        {/* The Barbell sleeve shaft bar */}
+                        <div className="absolute h-3 w-full bg-gradient-to-r from-[#221d35] via-[#a49bcb] to-[#221d35] rounded-full border border-[#2a2440]" />
+                        
+                        {/* Sleeve Collars */}
+                        <div className="absolute left-[30%] h-16 w-3.5 bg-[#a49bcb] border border-y-gray-900 border-x-gray-500 z-10 rounded shadow-md" />
+                        <div className="absolute right-[30%] h-16 w-3.5 bg-[#a49bcb] border border-y-gray-900 border-x-gray-500 z-10 rounded shadow-md" />
+                        
+                        {/* Center shaft portion */}
+                        <div className="absolute left-[31%] right-[31%] h-4 bg-gradient-to-b from-gray-700 to-gray-500 border-y border-gray-950" />
+
+                        {/* Left Sleeve Loaded Plates (rendered outer-to-inner, mirroring right side) */}
+                        <div className="absolute right-[71%] flex flex-row-reverse items-center z-20 pr-0.5 select-none">
+                          {calculatorPlates.map((plateWeight, idx) => {
+                            const plateStyle = getPlateStyle(plateWeight);
+                            return (
+                              <div
+                                key={`left-${idx}`}
+                                onClick={() => setCalculatorPlates(prev => prev.filter((_, i) => i !== idx))}
+                                title="Tap to remove plate"
+                                className={`rounded-[4px] border border-black/50 mx-[1.5px] relative flex items-center justify-center cursor-pointer hover:brightness-110 active:scale-95 transition-all shadow-lg ${plateStyle.color}`}
+                                style={{
+                                  height: `${plateStyle.height}px`,
+                                  width: `${plateStyle.width}px`,
+                                }}
+                              >
+                                <span className="text-[7.5px] font-mono font-bold leading-none tracking-tighter rotate-90 origin-center select-none whitespace-nowrap">
+                                  {userState.useLb ? (plateWeight * 2.20462).toFixed(1) : plateWeight}
+                                </span>
+                              </div>
+                            );
+                          })}
+                        </div>
+
+                        {/* Right Sleeve Loaded Plates */}
+                        <div className="absolute left-[71%] flex flex-row items-center z-20 pl-0.5 select-none">
+                          {calculatorPlates.map((plateWeight, idx) => {
+                            const plateStyle = getPlateStyle(plateWeight);
+                            return (
+                              <div
+                                key={`right-${idx}`}
+                                onClick={() => setCalculatorPlates(prev => prev.filter((_, i) => i !== idx))}
+                                title="Tap to remove plate"
+                                className={`rounded-[4px] border border-black/50 mx-[1.5px] relative flex items-center justify-center cursor-pointer hover:brightness-110 active:scale-95 transition-all shadow-lg ${plateStyle.color}`}
+                                style={{
+                                  height: `${plateStyle.height}px`,
+                                  width: `${plateStyle.width}px`,
+                                }}
+                              >
+                                <span className="text-[7.5px] font-mono font-bold leading-none tracking-tighter rotate-90 origin-center select-none whitespace-nowrap">
+                                  {userState.useLb ? (plateWeight * 2.20462).toFixed(1) : plateWeight}
+                                </span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </>
+                    ) : (
+                      /* No bar state: single centered block / stack of plates */
+                      <div className="absolute inset-0 flex items-center justify-center font-sans">
+                        <div className="absolute h-2 w-48 bg-gradient-to-r from-gray-700 to-gray-500 rounded-full" />
+                        <div className="relative flex flex-row items-center z-20">
+                          {calculatorPlates.length === 0 ? (
+                            <span className="font-mono text-[10px] text-gray-500 italic">No plates added</span>
+                          ) : (
+                            calculatorPlates.map((plateWeight, idx) => {
+                              const plateStyle = getPlateStyle(plateWeight);
+                              return (
+                                <div
+                                  key={`nobar-${idx}`}
+                                  onClick={() => setCalculatorPlates(prev => prev.filter((_, i) => i !== idx))}
+                                  title="Tap to remove plate"
+                                  className={`rounded-[4px] border border-black/50 mx-[1.5px] relative flex items-center justify-center cursor-pointer hover:brightness-110 active:scale-95 transition-all shadow-lg ${plateStyle.color}`}
+                                  style={{
+                                    height: `${plateStyle.height}px`,
+                                    width: `${plateStyle.width}px`,
+                                  }}
+                                >
+                                  <span className="text-[7.5px] font-mono font-bold leading-none tracking-tighter rotate-90 origin-center select-none whitespace-nowrap">
+                                    {userState.useLb ? (plateWeight * 2.20462).toFixed(1) : plateWeight}
+                                  </span>
+                                </div>
+                              );
+                            })
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Quick Clear controls */}
+                  <div className="flex gap-2.5 w-full border-t border-[#221d35] pt-3.5 z-10 select-none">
+                    <button
+                      onClick={() => setCalculatorPlates([])}
+                      className="flex-1 bg-red-400/10 hover:bg-red-400/20 border border-red-400/20 text-red-400 rounded-xl py-2 font-mono text-[10px] uppercase font-bold tracking-wider cursor-pointer text-center active:scale-95 transition-all"
+                    >
+                      Clear All Plates
+                    </button>
+                    <button
+                      disabled={calculatorPlates.length === 0}
+                      onClick={() => setCalculatorPlates(prev => prev.slice(0, -1))}
+                      className="flex-1 bg-[#1c182d] hover:bg-[#221d35] border border-[#2a2440] text-gray-400 hover:text-white rounded-xl py-2 font-mono text-[10px] uppercase font-bold tracking-wider cursor-pointer text-center active:scale-95 transition-all disabled:opacity-40"
+                    >
+                      Undo last plate
+                    </button>
+                  </div>
+                  
+                  <span className="font-mono text-[8px] text-gray-600 uppercase tracking-wide mt-1 block">
+                    💡 Click any plate on bar sleeve to specific-delete it!
+                  </span>
+                </div>
+
+                {/* 1. Bar Select Category with Scrollbar support */}
+                <div className="flex flex-col gap-2 font-sans">
+                  <span className="font-mono text-[10px] text-gray-400 uppercase tracking-widest block font-bold leading-none">
+                    🍺 Select Barbell / Handle
+                  </span>
+                  {/* Horizontal scrollbar block */}
+                  <div className="flex gap-3 overflow-x-auto pb-2 scrollbar-none snap-x select-none">
+                    {[
+                      { id: "Standard Bar", weight: 20, subtitle: "Olympic sleeve" },
+                      { id: "Short Bar", weight: 15, subtitle: "Studio straight" },
+                      { id: "EZ Curls Bar", weight: 10, subtitle: "Angled grip" },
+                      { id: "No barbell", weight: 0, subtitle: "Direct add" }
+                    ].map((barItem) => {
+                      const isSelected = calculatorBarWeight === barItem.weight;
+                      const convertedBarWeight = userState.useLb ? barItem.weight * 2.20462 : barItem.weight;
+                      return (
+                        <button
+                          key={barItem.id}
+                          onClick={() => setCalculatorBarWeight(barItem.weight)}
+                          className={`px-4.5 py-3 rounded-xl border font-mono shrink-0 transition-all text-left flex flex-col snap-start min-w-[130px] gap-1 cursor-pointer active:scale-95 ${
+                            isSelected
+                              ? "bg-[#f0c972] border-[#f0c972] text-[#0d0b14]"
+                              : "bg-[#13111f] border border-[#2a2440] text-gray-400 hover:border-gray-500"
+                          }`}
+                        >
+                          <span className="font-bold text-xs">{barItem.id}</span>
+                          <span className={`text-[9.5px] ${isSelected ? "text-[#0d0b14]/80" : "text-gray-500"}`}>
+                            {convertedBarWeight.toFixed(1)} {userState.useLb ? "lb" : "kg"}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* 2. Plates Add Category with Horizontal scrollbar and Custom + Button */}
+                <div className="flex flex-col gap-2 font-sans">
+                  <span className="font-mono text-[10px] text-gray-400 uppercase tracking-widest block font-bold leading-none">
+                    🥞 Add Weight Plates (Australian standard sizes)
+                  </span>
+                  {/* Horizontal scrollbar block */}
+                  <div className="flex gap-3 overflow-x-auto pb-2.5 scrollbar-none snap-x select-none items-stretch">
+                    {availablePlates.map((plateKg) => {
+                      const plateStyle = getPlateStyle(plateKg);
+                      const convertedPlateWeight = userState.useLb ? plateKg * 2.20462 : plateKg;
+                      return (
+                        <button
+                          key={plateKg}
+                          onClick={() => setCalculatorPlates(prev => [...prev, plateKg])}
+                          className="px-4.5 py-3.5 rounded-xl bg-[#13111f] border border-[#2a2440] hover:border-[#f0c972] font-mono shrink-0 transition-all text-center flex flex-col items-center justify-center gap-2 snap-start min-w-[85px] active:scale-95 cursor-pointer"
+                        >
+                          {/* Miniature representations inside bubble */}
+                          <div className={`w-4 h-4 rounded-full border border-black/30 ${plateStyle.color}`} />
+                          <span className="font-bold text-xs text-white">
+                            {convertedPlateWeight.toFixed(1)}
+                            <span className="text-[9.5px] block font-medium opacity-70 mt-0.5">{userState.useLb ? "lb" : "kg"}</span>
+                          </span>
+                        </button>
+                      );
+                    })}
+                    
+                    {/* Custom Plus Button at end of scrollbar row */}
+                    <button
+                      onClick={() => {
+                        const inputStr = prompt(`Enter custom plate weight in ${userState.useLb ? "pounds (lb)" : "kilograms (kg)"}:`);
+                        if (inputStr) {
+                          const val = parseFloat(inputStr);
+                          if (val > 0) {
+                            const kgVal = userState.useLb ? val / 2.20462 : val;
+                            // Append rounded to 2 decimals
+                            setAvailablePlates(prev => [...prev, Math.round(kgVal * 100) / 100]);
+                          }
+                        }
+                      }}
+                      className="px-4.5 py-3.5 rounded-xl bg-[#1e1a30] border-2 border-dashed border-[#2d2459] hover:border-[#f0c972] text-[#f0c972] hover:text-white font-mono shrink-0 transition-all text-center flex flex-col items-center justify-center gap-2.5 snap-start min-w-[85px] cursor-pointer active:scale-95"
+                    >
+                      <Plus className="w-5 h-5" />
+                      <span className="font-bold text-[10px] uppercase tracking-wider">Custom</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* 3. Action Apply button */}
+                <button
+                  onClick={() => {
+                    if (!activeWorkout || !activeInput) return;
+                    const { exIdx, setIdx } = activeInput;
+                    const totalKgVal = getCalculatorTotal();
+                    
+                    // Format to 1 decimal place matching input expectations
+                    const displayVal = userState.useLb
+                      ? (totalKgVal * 2.20462).toFixed(1)
+                      : totalKgVal.toFixed(1);
+
+                    handleUpdateActiveSetField(exIdx, setIdx, "weight", displayVal);
+                    setShowPlateCalculator(false);
+                  }}
+                  className="w-full bg-gradient-to-r from-[#f0c972] to-[#e07b3f] text-[#0d0b14] font-bebas text-lg tracking-wider py-4 mt-2.5 rounded-2xl active:scale-95 transition-all shadow-lg text-center cursor-pointer shrink-0"
+                >
+                  APPLY CALCULATED WEIGHT  ✓
+                </button>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         {/* -------------------- EXERCISE CHOOSER SHEET MODAL (Img 4) -------------------- */}
         {showAddExChooser && (

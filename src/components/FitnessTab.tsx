@@ -1290,17 +1290,17 @@ export default function FitnessTab({
                     {calculatorBarWeight > 0 ? (
                       <>
                         {/* The Barbell sleeve shaft bar */}
-                        <div className="absolute h-3 w-full bg-gradient-to-r from-[#221d35] via-[#a49bcb] to-[#221d35] rounded-full border border-[#2a2440]" />
+                        <div className="absolute top-1/2 -translate-y-1/2 h-3 w-full bg-gradient-to-r from-[#221d35] via-[#a49bcb] to-[#221d35] rounded-full border border-[#2a2440]" />
                         
                         {/* Sleeve Collars */}
-                        <div className="absolute left-[30%] h-16 w-3.5 bg-[#a49bcb] border border-y-gray-900 border-x-gray-500 z-10 rounded shadow-md" />
-                        <div className="absolute right-[30%] h-16 w-3.5 bg-[#a49bcb] border border-y-gray-900 border-x-gray-500 z-10 rounded shadow-md" />
+                        <div className="absolute left-[30%] top-1/2 -translate-y-1/2 h-16 w-3.5 bg-[#a49bcb] border border-y-gray-900 border-x-gray-500 z-10 rounded shadow-md" />
+                        <div className="absolute right-[30%] top-1/2 -translate-y-1/2 h-16 w-3.5 bg-[#a49bcb] border border-y-gray-900 border-x-gray-500 z-10 rounded shadow-md" />
                         
                         {/* Center shaft portion */}
-                        <div className="absolute left-[31%] right-[31%] h-4 bg-gradient-to-b from-gray-700 to-gray-500 border-y border-gray-950" />
+                        <div className="absolute left-[31%] right-[31%] top-1/2 -translate-y-1/2 h-4 bg-gradient-to-b from-gray-700 to-gray-500 border-y border-gray-950" />
 
                         {/* Left Sleeve Loaded Plates (rendered outer-to-inner, mirroring right side) */}
-                        <div className="absolute right-[71%] flex flex-row-reverse items-center z-20 pr-0.5 select-none">
+                        <div className="absolute right-[71%] top-0 bottom-0 flex flex-row-reverse items-center z-20 pr-0.5 select-none">
                           {calculatorPlates.map((plateWeight, idx) => {
                             const plateStyle = getPlateStyle(plateWeight);
                             return (
@@ -1323,7 +1323,7 @@ export default function FitnessTab({
                         </div>
 
                         {/* Right Sleeve Loaded Plates */}
-                        <div className="absolute left-[71%] flex flex-row items-center z-20 pl-0.5 select-none">
+                        <div className="absolute left-[71%] top-0 bottom-0 flex flex-row items-center z-20 pl-0.5 select-none">
                           {calculatorPlates.map((plateWeight, idx) => {
                             const plateStyle = getPlateStyle(plateWeight);
                             return (
@@ -1448,7 +1448,7 @@ export default function FitnessTab({
                       return (
                         <button
                           key={plateKg}
-                          onClick={() => setCalculatorPlates(prev => [...prev, plateKg])}
+                          onClick={() => setCalculatorPlates(prev => [...prev, plateKg].sort((a, b) => b - a))}
                           className="px-4.5 py-3.5 rounded-xl bg-[#13111f] border border-[#2a2440] hover:border-[#f0c972] font-mono shrink-0 transition-all text-center flex flex-col items-center justify-center gap-2 snap-start min-w-[85px] active:scale-95 cursor-pointer"
                         >
                           {/* Miniature representations inside bubble */}

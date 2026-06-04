@@ -1271,7 +1271,7 @@ export default function FitnessTab({
               <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-5 pb-10">
                 
                 {/* visual barbell component block */}
-                <div className="bg-[#13111f] border border-[#2a2440] rounded-2xl p-5 flex flex-col items-center justify-center gap-4 relative overflow-hidden min-h-[220px]">
+                <div className="bg-[#13111f] border border-[#2a2440] rounded-2xl p-5 flex flex-col items-center justify-start gap-4 relative overflow-hidden min-h-[270px] shrink-0">
                   {/* Total Weight Counter */}
                   <div className="text-center">
                     <span className="font-bebas text-4xl text-[#f0c972] tracking-wider block font-bold">
@@ -1284,7 +1284,7 @@ export default function FitnessTab({
                   </div>
 
                   {/* Visual Barbell representation with stacked plates */}
-                  <div className="w-full flex items-center justify-center h-32 relative mt-4">
+                  <div className="w-full flex items-center justify-center h-32 shrink-0 relative mt-4 mb-6">
                     
                     {/* If there is a bar */}
                     {calculatorBarWeight > 0 ? (
@@ -1379,7 +1379,7 @@ export default function FitnessTab({
                   </div>
 
                   {/* Quick Clear controls */}
-                  <div className="flex gap-2.5 w-full border-t border-[#221d35] pt-3.5 z-10 select-none">
+                  <div className="flex gap-2.5 w-full border-t border-[#221d35] pt-5 mt-2 z-10 shrink-0 select-none">
                     <button
                       onClick={() => setCalculatorPlates([])}
                       className="flex-1 bg-red-400/10 hover:bg-red-400/20 border border-red-400/20 text-red-400 rounded-xl py-2 font-mono text-[10px] uppercase font-bold tracking-wider cursor-pointer text-center active:scale-95 transition-all"

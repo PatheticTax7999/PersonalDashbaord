@@ -1,8 +1,8 @@
-import { useState, useEffect } from "react";
-import { auth, db, provider, handleFirestoreError, OperationType } from "./firebase";
-import { signInWithPopup, signOut, onAuthStateChanged, GoogleAuthProvider } from "firebase/auth";
+import React, { useState, useEffect, useRef } from "react";
+import { auth, db, provider, githubProvider, handleFirestoreError, OperationType } from "./firebase";
+import { signInWithPopup, signOut, onAuthStateChanged, GoogleAuthProvider, createUserWithEmailAndPassword, signInWithEmailAndPassword, updateProfile, sendPasswordResetEmail } from "firebase/auth";
 import { doc, setDoc, onSnapshot } from "firebase/firestore";
-import { UserState, ActiveWorkout, Routine, Exercise, CalendarEvent, Goal, WaterConfig, FoodLogEntry } from "./types";
+import { UserState, ActiveWorkout, Routine, Exercise, CalendarEvent, Goal, WaterConfig, FoodLogEntry, getLocalDateString } from "./types";
 import { motion, AnimatePresence } from "motion/react";
 import { Html5Qrcode } from "html5-qrcode";
 
@@ -13,6 +13,8 @@ import HealthTab from "./components/HealthTab";
 import CalendarTab from "./components/CalendarTab";
 import AIFieldCoach from "./components/AIFieldCoach";
 import AIFoodTracker from "./components/AIFoodTracker";
+import AICoachTab from "./components/AICoachTab";
+import CaffeineTab from "./components/CaffeineTab";
 
 // Import notification utilities
 import {
@@ -27,7 +29,7 @@ import {
 const defaultState = (): UserState => ({
   todayGoals: [],
   tomorrowGoals: [],
-  lastDate: new Date().toDateString(),
+  lastDate: getLocalDateString(),
   routines: [],
   exerciseHistory: {},
   supplements: [],
@@ -46,6 +48,9 @@ const defaultState = (): UserState => ({
   carbGoalPct: 40,
   fatGoalPct: 30,
   foodLog: {},
+  caffeineLogs: [],
+  customCaffeineDrinks: [],
+  coachChatHistory: [],
   routineFolders: [
     { id: "folder-3", name: "My Routines" }
   ],
@@ -66,9 +71,193 @@ const defaultState = (): UserState => ({
   }
 });
 
+const migrateLegacyLogs = (state: any): boolean => {
+  let updated = false;
+  if (state.foodLog) {
+    for (const key of Object.keys(state.foodLog)) {
+      if (key.includes(" ") && !key.includes("-")) {
+        try {
+          const d = new Date(key);
+          if (!isNaN(d.getTime())) {
+            const localISO = getLocalDateString(d);
+            state.foodLog[localISO] = [
+              ...(state.foodLog[localISO] || []),
+              ...state.foodLog[key]
+            ];
+            delete state.foodLog[key];
+            updated = true;
+          }
+        } catch (e) {}
+      }
+    }
+  }
+  if (state.suppChecks) {
+    for (const key of Object.keys(state.suppChecks)) {
+      if (key.includes(" ") && !key.includes("-")) {
+        try {
+          const d = new Date(key);
+          if (!isNaN(d.getTime())) {
+            const localISO = getLocalDateString(d);
+            state.suppChecks[localISO] = {
+              ...(state.suppChecks[localISO] || {}),
+              ...state.suppChecks[key]
+            };
+            delete state.suppChecks[key];
+            updated = true;
+          }
+        } catch (e) {}
+      }
+    }
+  }
+  return updated;
+};
+
+export function hasLoggedStats(state: UserState | null): boolean {
+  if (!state) return false;
+  return (
+    (state.weightLog && state.weightLog.length > 0) ||
+    (state.foodLog && Object.keys(state.foodLog).length > 0) ||
+    (state.waterLog && Object.keys(state.waterLog).length > 0) ||
+    (state.routines && state.routines.length > 0) ||
+    (state.completedWorkouts && state.completedWorkouts.length > 0) ||
+    (state.todayGoals && state.todayGoals.length > 0) ||
+    (state.caffeineLogs && state.caffeineLogs.length > 0)
+  );
+}
+
+export function mergeUserStates(googleState: UserState, guestState: UserState): UserState {
+  const merged = { ...googleState };
+
+  // 1. Merge today's goals
+  const existingGoalTexts = new Set((googleState.todayGoals || []).map(g => g.text.toLowerCase()));
+  const incomingGoals = (guestState.todayGoals || []).filter(g => !existingGoalTexts.has(g.text.toLowerCase()));
+  merged.todayGoals = [...(googleState.todayGoals || []), ...incomingGoals];
+
+  // 2. Merge routines
+  const existingRoutineNames = new Set((googleState.routines || []).map(r => r.name.toLowerCase()));
+  const incomingRoutines = (guestState.routines || []).filter(r => !existingRoutineNames.has(r.name.toLowerCase()));
+  merged.routines = [...(googleState.routines || []), ...incomingRoutines];
+
+  // 3. Merge weightLog
+  const weightMap = new Map<string, number>();
+  (googleState.weightLog || []).forEach(w => weightMap.set(w.date, w.weight));
+  (guestState.weightLog || []).forEach(w => weightMap.set(w.date, w.weight));
+  merged.weightLog = Array.from(weightMap.entries()).map(([date, weight]) => ({ date, weight }));
+
+  // 4. Merge foodLog
+  const foodLog = { ...(googleState.foodLog || {}) };
+  if (guestState.foodLog) {
+    Object.entries(guestState.foodLog).forEach(([date, items]) => {
+      if (!foodLog[date]) {
+        foodLog[date] = items;
+      } else {
+        const existingIds = new Set(foodLog[date].map(f => f.id));
+        const uniqueGuestItems = items.filter(f => !existingIds.has(f.id));
+        foodLog[date] = [...foodLog[date], ...uniqueGuestItems];
+      }
+    });
+  }
+  merged.foodLog = foodLog;
+
+  // 5. Merge waterLog
+  const waterLog = { ...(googleState.waterLog || {}) };
+  if (guestState.waterLog) {
+    Object.entries(guestState.waterLog).forEach(([date, volume]) => {
+      waterLog[date] = Math.max(waterLog[date] || 0, volume);
+    });
+  }
+  merged.waterLog = waterLog;
+
+  // 6. Merge completedWorkouts
+  const workoutIds = new Set((googleState.completedWorkouts || []).map(w => w.id));
+  const uniqueGuestWorkouts = (guestState.completedWorkouts || []).filter(w => !workoutIds.has(w.id));
+  merged.completedWorkouts = [...(googleState.completedWorkouts || []), ...uniqueGuestWorkouts];
+
+  // 7. Merge caffeineLogs
+  const caffeineIds = new Set((googleState.caffeineLogs || []).map(c => c.id));
+  const uniqueGuestCaffeine = (guestState.caffeineLogs || []).filter(c => !caffeineIds.has(c.id));
+  merged.caffeineLogs = [...(googleState.caffeineLogs || []), ...uniqueGuestCaffeine];
+
+  // 8. Custom caffeine drinks
+  const drinkIds = new Set((googleState.customCaffeineDrinks || []).map(d => d.id));
+  const uniqueGuestDrinks = (guestState.customCaffeineDrinks || []).filter(d => !drinkIds.has(d.id));
+  merged.customCaffeineDrinks = [...(googleState.customCaffeineDrinks || []), ...uniqueGuestDrinks];
+
+  // 9. Supplements
+  const suppNames = new Set((googleState.supplements || []).map(s => s.name.toLowerCase()));
+  const uniqueSupps = (guestState.supplements || []).filter(s => !suppNames.has(s.name.toLowerCase()));
+  merged.supplements = [...(googleState.supplements || []), ...uniqueSupps];
+
+  return merged;
+}
+
 export default function App() {
-  const [activeTab, setActiveTab] = useState<"home" | "fitness" | "health" | "calendar">("home");
-  const [healthSubTab, setHealthSubTab] = useState<"hydration" | "weight" | "nutrition">("hydration");
+  const [activeTab, setActiveTab] = useState<"home" | "fitness" | "health" | "calendar" | "ai" | "caffeine">(() => {
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      const urlTab = params.get("tab");
+      if (urlTab === "home" || urlTab === "fitness" || urlTab === "health" || urlTab === "calendar" || urlTab === "ai" || urlTab === "caffeine") {
+        return urlTab as "home" | "fitness" | "health" | "calendar" | "ai" | "caffeine";
+      }
+    }
+    return "home";
+  });
+  const [healthSubTab, setHealthSubTab] = useState<"hydration" | "weight" | "nutrition">(() => {
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      const urlSubTab = params.get("subtab");
+      if (urlSubTab === "hydration" || urlSubTab === "weight" || urlSubTab === "nutrition") {
+        return urlSubTab as "hydration" | "weight" | "nutrition";
+      }
+    }
+    return "hydration";
+  });
+
+  // Synchronize activeTab and healthSubTab with URL search parameter
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      let updated = false;
+      if (params.get("tab") !== activeTab) {
+        params.set("tab", activeTab);
+        updated = true;
+      }
+      if (activeTab === "health" && params.get("subtab") !== healthSubTab) {
+        params.set("subtab", healthSubTab);
+        updated = true;
+      } else if (activeTab !== "health" && params.has("subtab")) {
+        params.delete("subtab");
+        updated = true;
+      }
+      if (updated) {
+        const newUrl = `${window.location.pathname}?${params.toString()}`;
+        window.history.pushState({ tab: activeTab, subtab: healthSubTab }, "", newUrl);
+      }
+    }
+  }, [activeTab, healthSubTab]);
+
+  useEffect(() => {
+    const handlePopState = () => {
+      if (typeof window !== "undefined") {
+        const params = new URLSearchParams(window.location.search);
+        const urlTab = params.get("tab");
+        if (urlTab === "home" || urlTab === "fitness" || urlTab === "health" || urlTab === "calendar" || urlTab === "ai" || urlTab === "caffeine") {
+          setActiveTab(urlTab);
+        }
+        const urlSubTab = params.get("subtab");
+        if (urlSubTab === "hydration" || urlSubTab === "weight" || urlSubTab === "nutrition") {
+          setHealthSubTab(urlSubTab);
+        }
+      }
+    };
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, []);
+
+  // Dynamic state merging triggers for guest-to-cloud transition
+  const [localGuestDataToMerge, setLocalGuestDataToMerge] = useState<UserState | null>(null);
+  const [showMergePrompt, setShowMergePrompt] = useState(false);
+  const [justMerged, setJustMerged] = useState(false);
   
   // Notification Permission State
   const [notifPermission, setNotifPermission] = useState<NotificationPermission>(() => getPermissionStatus());
@@ -88,10 +277,36 @@ export default function App() {
   });
   
   const [authLoading, setAuthLoading] = useState(!user);
+  const [isCloudSyncing, setIsCloudSyncing] = useState(false);
+  const firestoreLoadedRef = useRef(false);
 
   // User details state (optimistically load from cache or defaults)
   const [userState, setUserState] = useState<UserState>(() => {
-    const cachedData = localStorage.getItem("life_dashboard_user_state");
+    let currentUid = user?.uid;
+    if (!currentUid) {
+      const cachedUser = localStorage.getItem("life_dashboard_cached_user");
+      if (cachedUser) {
+        try {
+          currentUid = JSON.parse(cachedUser)?.uid;
+        } catch (e) {}
+      }
+    }
+    const cacheKey = currentUid
+      ? (currentUid.startsWith("guest_") ? "life_dashboard_guest_user_state" : `life_dashboard_user_state_${currentUid}`)
+      : "life_dashboard_user_state";
+
+    let cachedData = localStorage.getItem(cacheKey);
+    // Legacy support: read from global cache key if current dynamically slotted cache key doesn't exist
+    if (!cachedData && currentUid && !currentUid.startsWith("guest_")) {
+      const legacyData = localStorage.getItem("life_dashboard_user_state");
+      if (legacyData) {
+        cachedData = legacyData;
+        try {
+          localStorage.setItem(cacheKey, legacyData);
+        } catch (e) {}
+      }
+    }
+
     if (cachedData) {
       try {
         const parsed = JSON.parse(cachedData);
@@ -124,11 +339,142 @@ export default function App() {
 
   // Google Calendar Integration states
   const [gcalAccessToken, setGcalAccessToken] = useState<string | null>(null);
-  const [gcalEvents, setGcalEvents] = useState<CalendarEvent[]>([]);
+  const [gcalEvents, setGcalEvents] = useState<CalendarEvent[]>(() => {
+    // Try to restore from cached user state in localStorage
+    let currentUid = user?.uid;
+    if (!currentUid) {
+      const cachedUser = localStorage.getItem("life_dashboard_cached_user");
+      if (cachedUser) {
+        try {
+          currentUid = JSON.parse(cachedUser)?.uid;
+        } catch (e) {}
+      }
+    }
+    const cacheKey = currentUid
+      ? (currentUid.startsWith("guest_") ? "life_dashboard_guest_user_state" : `life_dashboard_user_state_${currentUid}`)
+      : "life_dashboard_user_state";
+
+    let cachedData = localStorage.getItem(cacheKey);
+    if (!cachedData && currentUid && !currentUid.startsWith("guest_")) {
+      const legacyData = localStorage.getItem("life_dashboard_user_state");
+      if (legacyData) {
+        cachedData = legacyData;
+      }
+    }
+
+    if (cachedData) {
+      try {
+        const parsed = JSON.parse(cachedData);
+        return parsed.gcalEvents || [];
+      } catch (e) {}
+    }
+    return [];
+  });
   const [gcalLoading, setGcalLoading] = useState(false);
   const [gcalError, setGcalError] = useState<string | null>(null);
   const [gsiScriptLoaded, setGsiScriptLoaded] = useState(false);
   const [authError, setAuthError] = useState<any | null>(null);
+
+  // Email login / Sign up state variables
+  const [authEmail, setAuthEmail] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [authDisplayName, setAuthDisplayName] = useState("");
+  const [isAuthSignUp, setIsAuthSignUp] = useState(false);
+  const [authSuccessMessage, setAuthSuccessMessage] = useState<string | null>(null);
+
+  const handleEmailAuth = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError(null);
+    setAuthSuccessMessage(null);
+    if (!authEmail.trim() || !authPassword.trim()) {
+      setAuthError({ message: "Please fill in all email and password fields." });
+      return;
+    }
+    if (isAuthSignUp && !authDisplayName.trim()) {
+      setAuthError({ message: "Name is required for registration." });
+      return;
+    }
+    try {
+      if (isAuthSignUp) {
+        const userCred = await createUserWithEmailAndPassword(auth, authEmail.trim(), authPassword.trim());
+        if (userCred.user) {
+          await updateProfile(userCred.user, {
+            displayName: authDisplayName.trim()
+          });
+          const profile = {
+            uid: userCred.user.uid,
+            displayName: authDisplayName.trim(),
+            email: userCred.user.email,
+            photoURL: ""
+          };
+          setUser(profile);
+          localStorage.setItem("life_dashboard_cached_user", JSON.stringify(profile));
+          document.cookie = `is_authenticated=true; max-age=2592000; path=/`;
+        }
+      } else {
+        const userCred = await signInWithEmailAndPassword(auth, authEmail.trim(), authPassword.trim());
+        if (userCred.user) {
+          const profile = {
+            uid: userCred.user.uid,
+            displayName: userCred.user.displayName || "Athlete",
+            email: userCred.user.email,
+            photoURL: userCred.user.photoURL || ""
+          };
+          setUser(profile);
+          localStorage.setItem("life_dashboard_cached_user", JSON.stringify(profile));
+          document.cookie = `is_authenticated=true; max-age=2592000; path=/`;
+        }
+      }
+      // Reset form on success
+      setAuthEmail("");
+      setAuthPassword("");
+      setAuthDisplayName("");
+    } catch (err: any) {
+      console.error("Email authentication failed:", err);
+      let errMsg = err.message || "An authentication error occurred.";
+      if (err.code === "auth/email-already-in-use") {
+        errMsg = "This email address is already in use. Try signing in instead.";
+      } else if (err.code === "auth/invalid-credential" || err.code === "auth/wrong-password" || err.code === "auth/user-not-found" || err.code === "auth/invalid-login-credentials") {
+        errMsg = "Invalid email or password credentials. Please verify your typing or register a new one.";
+      } else if (err.code === "auth/invalid-email") {
+        errMsg = "Please format your email address correctly (e.g. name@domain.com).";
+      } else if (err.code === "auth/weak-password") {
+        errMsg = "Password must be at least 6 characters long to secure your health stats.";
+      } else if (err.code === "auth/operation-not-allowed") {
+        errMsg = "Email/Password sign-in is not enabled in this Firebase project yet. Please verify it in the Firebase Auth console tab.";
+      }
+      setAuthError({ message: errMsg, code: err.code });
+    }
+  };
+
+  const handleForgotPassword = async () => {
+    setAuthError(null);
+    setAuthSuccessMessage(null);
+    if (!authEmail.trim()) {
+      setAuthError({ message: "Please type in your email address above first to send a password reset link." });
+      return;
+    }
+    try {
+      await sendPasswordResetEmail(auth, authEmail.trim());
+      setAuthSuccessMessage(`📧 A password-reset link has been sent to ${authEmail.trim()}! Please check your inbox.`);
+    } catch (err: any) {
+      console.error("Password reset error:", err);
+      let errMsg = err.message || "Failed to trigger password-reset.";
+      if (err.code === "auth/invalid-email") {
+        errMsg = "Please enter a valid email address first.";
+      } else if (err.code === "auth/user-not-found") {
+        errMsg = "No user found with this email address.";
+      }
+      setAuthError({ message: errMsg });
+    }
+  };
+
+  // Keep gcalEvents state synchronized with loaded userState.gcalEvents
+  useEffect(() => {
+    if (userState.gcalEvents) {
+      setGcalEvents(userState.gcalEvents);
+    }
+  }, [userState.gcalEvents]);
 
   // Addition Modal and Plus FAB Submenu states
   const [isAddMenuOpen, setIsAddMenuOpen] = useState(false);
@@ -155,6 +501,16 @@ export default function App() {
   const [foodServingMultiplier, setFoodServingMultiplier] = useState(1);
   const [scannedProductError, setScannedProductError] = useState("");
   const [isBarcodeScanning, setIsBarcodeScanning] = useState(false);
+
+  // Track if virtual keyboard is open in workout views
+  const [workoutKeyboardOpen, setWorkoutKeyboardOpen] = useState(false);
+
+  // Close plus action menu automatically when keyboard is active
+  useEffect(() => {
+    if (workoutKeyboardOpen) {
+      setIsAddMenuOpen(false);
+    }
+  }, [workoutKeyboardOpen]);
 
   // Active training workout (with local storage caching for persistence across reload)
   const [activeWorkout, setActiveWorkout] = useState<ActiveWorkout | null>(() => {
@@ -206,7 +562,7 @@ export default function App() {
 
   // Supplement local periodic warning / missed check engine
   useEffect(() => {
-    const today = new Date().toISOString().slice(0, 10);
+    const today = getLocalDateString();
     
     // Prune expired historical notify records on load
     pruneNotificationCache(today);
@@ -318,7 +674,7 @@ export default function App() {
       } else {
         // Logged out
         setUser(prev => {
-          if (prev?.uid === "local-guest-user") return prev;
+          if (prev?.uid && prev.uid.startsWith("guest_")) return prev;
           localStorage.removeItem("life_dashboard_cached_user");
           document.cookie = "is_authenticated=; max-age=0; path=/";
           return null;
@@ -330,45 +686,94 @@ export default function App() {
     return () => unsubscribeAuth();
   }, []);
 
+  // Dynamic merge check effect once authenticating Google Account
+  useEffect(() => {
+    if (user?.uid && !user.uid.startsWith("guest_")) {
+      const cachedGuestRaw = localStorage.getItem("life_dashboard_guest_user_state");
+      if (cachedGuestRaw) {
+        try {
+          const parsed = JSON.parse(cachedGuestRaw);
+          if (hasLoggedStats(parsed)) {
+            setLocalGuestDataToMerge(parsed);
+            setShowMergePrompt(true);
+          }
+        } catch (e) {}
+      }
+    }
+  }, [user]);
+
+  const handleMergeAndSyncGuestData = () => {
+    if (!localGuestDataToMerge || !user?.uid) return;
+    const mergedState = mergeUserStates(userState, localGuestDataToMerge);
+    setUserState(mergedState);
+    setDoc(doc(db, "users", user.uid), mergedState)
+      .then(() => {
+        localStorage.removeItem("life_dashboard_guest_user_state");
+        setLocalGuestDataToMerge(null);
+        setShowMergePrompt(false);
+        setJustMerged(true);
+        setTimeout(() => setJustMerged(false), 4000);
+      })
+      .catch((err) => {
+        handleFirestoreError(err, OperationType.WRITE, `users/${user.uid}`);
+      });
+  };
+
+  const handleDeclineMerge = () => {
+    localStorage.removeItem("life_dashboard_guest_user_state");
+    setLocalGuestDataToMerge(null);
+    setShowMergePrompt(false);
+  };
+
   // Sync state from Firestore using active listeners
   useEffect(() => {
     if (!user?.uid) return;
 
-    if (user.uid === "local-guest-user") {
-      // Load local guest profile from localStorage or fallback to default
-      const cachedData = localStorage.getItem("life_dashboard_guest_user_state");
-      if (cachedData) {
-        try {
-          const parsed = JSON.parse(cachedData);
-          const today = new Date().toDateString();
-          let state = { ...defaultState(), ...parsed };
-          if (state.lastDate && state.lastDate !== today) {
-            let finalTaskStreak = state.taskStreak ?? 0;
-            if (state.lastStreakCompletedDate !== state.lastDate) {
-              finalTaskStreak = 0;
-            }
-            state.todayGoals = [
-              ...(state.todayGoals || []).filter((g: any) => !g.done),
-              ...(state.tomorrowGoals || []).map((g: any) => ({ ...g, done: false }))
-            ];
-            state.tomorrowGoals = [];
-            state.lastDate = today;
-            state.taskStreak = finalTaskStreak;
-            localStorage.setItem("life_dashboard_guest_user_state", JSON.stringify(state));
+    const isGuest = user.uid.startsWith("guest_");
+    const cacheKey = isGuest ? "life_dashboard_guest_user_state" : `life_dashboard_user_state_${user.uid}`;
+    const cachedData = localStorage.getItem(cacheKey);
+
+    if (cachedData) {
+      try {
+        const parsed = JSON.parse(cachedData);
+        const today = getLocalDateString();
+        let state = { ...defaultState(), ...parsed };
+        let localUpdated = migrateLegacyLogs(state);
+        if (state.lastDate && state.lastDate !== today) {
+          let finalTaskStreak = state.taskStreak ?? 0;
+          if (state.lastStreakCompletedDate !== state.lastDate) {
+            finalTaskStreak = 0;
           }
-          setUserState(state);
-          return;
-        } catch (e) {}
-      }
-      setUserState(defaultState());
-      return;
+          state.todayGoals = [
+            ...(state.todayGoals || []).filter((g: any) => !g.done),
+            ...(state.tomorrowGoals || []).map((g: any) => ({ ...g, done: false }))
+          ];
+          state.tomorrowGoals = [];
+          state.lastDate = today;
+          state.taskStreak = finalTaskStreak;
+          localUpdated = true;
+        }
+        if (localUpdated) {
+          localStorage.setItem(cacheKey, JSON.stringify(state));
+        }
+        setUserState(state);
+      } catch (e) {}
     }
+
+    if (isGuest) {
+      firestoreLoadedRef.current = true;
+      return () => {};
+    }
+
+    setIsCloudSyncing(true);
 
     const docRef = doc(db, "users", user.uid);
     const unsubscribeFirestore = onSnapshot(docRef, (snap) => {
+      setIsCloudSyncing(false);
+      firestoreLoadedRef.current = true;
       if (snap.exists()) {
         const d = snap.data();
-        const today = new Date().toDateString();
+        const today = getLocalDateString();
         let updatedGoals = d.todayGoals || [];
         let updatedTomorrow = d.tomorrowGoals || [];
         let updatedLastDate = d.lastDate || today;
@@ -421,20 +826,34 @@ export default function App() {
           proteinGoalPct: d.proteinGoalPct ?? defaultState().proteinGoalPct,
           carbGoalPct: d.carbGoalPct ?? defaultState().carbGoalPct,
           fatGoalPct: d.fatGoalPct ?? defaultState().fatGoalPct,
-          foodLog: d.foodLog || {}
+          foodLog: d.foodLog || {},
+          gcalEvents: d.gcalEvents || d.gcal_events || [],
+          routineFolders: d.routineFolders || defaultState().routineFolders,
+          aiDailyWorkout: d.aiDailyWorkout || undefined,
+          progressPhotos: d.progressPhotos || [],
+          caffeineLogs: d.caffeineLogs || [],
+          customCaffeineDrinks: d.customCaffeineDrinks || [],
+          coachChatHistory: d.coachChatHistory || []
         };
+
+        const cloudUpdated = migrateLegacyLogs(fetched);
+        if (cloudUpdated) {
+          setDoc(doc(db, "users", user.uid), fetched).catch(() => {});
+        }
 
         setUserState(fetched);
         // Sync static cache
-        localStorage.setItem("life_dashboard_user_state", JSON.stringify(fetched));
+        localStorage.setItem(cacheKey, JSON.stringify(fetched));
       } else {
         // Fresh profile registration
+        firestoreLoadedRef.current = true;
         const fresh = defaultState();
         setDoc(doc(db, "users", user.uid), fresh).catch(err => {
           handleFirestoreError(err, OperationType.CREATE, `users/${user.uid}`);
         });
       }
     }, (err) => {
+      setIsCloudSyncing(false);
       handleFirestoreError(err, OperationType.GET, `users/${user.uid}`);
     });
 
@@ -491,6 +910,11 @@ export default function App() {
     localStorage.removeItem("gcal_token");
     localStorage.removeItem("gcal_token_expiry");
     document.cookie = "gcal_token=; max-age=0; path=/";
+
+    // Clear from userState / Firestore persisted properties
+    const copy = { ...userState, gcalEvents: [] };
+    setUserState(copy);
+    updateFirestore(copy);
   };
 
   const fetchGCalEvents = async (token: string) => {
@@ -510,8 +934,12 @@ export default function App() {
       });
       if (!res.ok) {
         if (res.status === 401) {
-          disconnectGcal();
-          setGcalError("Connection session expired. Please reconnect.");
+          // Sync token is expired. Wipe local tokens/credentials but preserve the loaded calendar items!
+          setGcalAccessToken(null);
+          localStorage.removeItem("gcal_token");
+          localStorage.removeItem("gcal_token_expiry");
+          document.cookie = "gcal_token=; max-age=0; path=/";
+          setGcalError("Connection session expired. Please connect again to refresh live schedules.");
         } else if (res.status === 403) {
           let detailedMsg = "Access Forbidden (403): Ensure the 'Google Calendar API' is enabled in your Google Cloud Console for this project and your email is added to 'Test Users'.";
           try {
@@ -527,7 +955,13 @@ export default function App() {
         return;
       }
       const data = await res.json();
-      setGcalEvents(data.items || []);
+      const events = data.items || [];
+      setGcalEvents(events);
+
+      // Persist events structure back to UserState / Firestore
+      const copy = { ...userState, gcalEvents: events };
+      setUserState(copy);
+      updateFirestore(copy);
     } catch (err) {
       setGcalError("Could not retrieve calendar items due to a connection issue.");
     } finally {
@@ -546,16 +980,31 @@ export default function App() {
     }
   };
 
+  // GitHub Login popup launcher
+  const handleGithubLogin = async () => {
+    try {
+      setAuthError(null);
+      await signInWithPopup(auth, githubProvider);
+    } catch (e) {
+      console.error("GitHub popup logon missed/denied:", e);
+      setAuthError(e);
+    }
+  };
+
   // Standard user log out
   const handleSignOut = async () => {
     try {
-      if (user?.uid !== "local-guest-user") {
+      const currentUid = user?.uid;
+      if (currentUid && !currentUid.startsWith("guest_")) {
         await signOut(auth);
       }
       disconnectGcal();
       setUser(null);
       setUserState(defaultState());
       localStorage.removeItem("life_dashboard_user_state");
+      if (currentUid) {
+        localStorage.removeItem(`life_dashboard_user_state_${currentUid}`);
+      }
       localStorage.removeItem("life_dashboard_cached_user");
       localStorage.removeItem("life_dashboard_guest_user_state");
       document.cookie = "is_authenticated=; max-age=0; path=/";
@@ -565,18 +1014,23 @@ export default function App() {
   // Push state improvements back to Firestore
   const updateFirestore = (updated: UserState) => {
     if (!user?.uid) return;
-    if (user.uid === "local-guest-user") {
-      localStorage.setItem("life_dashboard_guest_user_state", JSON.stringify(updated));
-      localStorage.setItem("life_dashboard_user_state", JSON.stringify(updated));
+    const isGuest = user.uid.startsWith("guest_");
+    if (!isGuest && !firestoreLoadedRef.current) {
+      console.warn("[updateFirestore] Preventing write: Firestore snapshot is not loaded yet.");
       return;
     }
-    setDoc(doc(db, "users", user.uid), updated).catch(err => {
-      handleFirestoreError(err, OperationType.WRITE, `users/${user.uid}`);
-    });
+    if (isGuest) {
+      localStorage.setItem("life_dashboard_guest_user_state", JSON.stringify(updated));
+    } else {
+      localStorage.setItem(`life_dashboard_user_state_${user.uid}`, JSON.stringify(updated));
+      setDoc(doc(db, "users", user.uid), updated).catch(err => {
+        handleFirestoreError(err, OperationType.WRITE, `users/${user.uid}`);
+      });
+    }
   };
 
   const handleLogFood = (name: string, calories: number, protein: number, carbs: number, fat: number, barcode?: string, quantity: number = 1) => {
-    const today = new Date().toDateString();
+    const today = getLocalDateString();
     const entry: FoodLogEntry = {
       id: Math.random().toString(36).slice(2, 9),
       name,
@@ -599,7 +1053,7 @@ export default function App() {
   };
 
   const handleRemoveFood = (id: string) => {
-    const today = new Date().toDateString();
+    const today = getLocalDateString();
     const copy = { ...userState };
     if (copy.foodLog && copy.foodLog[today]) {
       copy.foodLog[today] = copy.foodLog[today].filter(e => e.id !== id);
@@ -709,7 +1163,7 @@ export default function App() {
   }, [activeAddModal, foodTab]);
 
   const evaluateStreak = (copy: UserState): UserState => {
-    const today = new Date().toDateString();
+    const today = getLocalDateString();
     const allDone = copy.todayGoals.length > 0 && copy.todayGoals.every(g => g.done);
     
     if (allDone) {
@@ -822,7 +1276,7 @@ export default function App() {
 
   // Supplements checking
   const handleToggleSuppCheck = (suppId: string, slotKey: string) => {
-    const today = new Date().toISOString().slice(0, 10);
+    const today = getLocalDateString();
     const copy = { ...userState };
     if (!copy.suppChecks[today]) {
       copy.suppChecks[today] = {};
@@ -865,7 +1319,7 @@ export default function App() {
   };
 
   const handleLogWater = (action: "increment" | "decrement") => {
-    const today = new Date().toISOString().slice(0, 10);
+    const today = getLocalDateString();
     const copy = { ...userState };
     const current = copy.waterLog[today] || 0;
     if (action === "increment") {
@@ -889,7 +1343,7 @@ export default function App() {
   };
 
   const handleResetWater = () => {
-    const today = new Date().toISOString().slice(0, 10);
+    const today = getLocalDateString();
     const copy = { ...userState };
     copy.waterLog[today] = 0;
     setUserState(copy);
@@ -939,7 +1393,7 @@ export default function App() {
 
     const elapsedMs = Date.now() - activeWorkout.startTime;
     const elapsedMins = Math.round(elapsedMs / 60000) || 1;
-    const todayDateStr = new Date().toISOString().slice(0, 10);
+    const todayDateStr = getLocalDateString();
 
     const newCompleted = {
       id: Math.random().toString(36).slice(2, 9),
@@ -989,7 +1443,7 @@ export default function App() {
 
   // Weight entry triggers
   const handleLogWeight = (weightKg: number) => {
-    const today = new Date().toISOString().slice(0, 10);
+    const today = getLocalDateString();
     const copy = { ...userState };
     const idx = copy.weightLog.findIndex(e => e.date === today);
     if (idx >= 0) {
@@ -1022,9 +1476,11 @@ export default function App() {
   if (!user) {
     return (
       <div className="fixed inset-0 bg-[#0d0b14] p-6 flex flex-col items-center justify-center gap-6 text-center select-none overflow-y-auto">
-        <div className="max-w-sm w-full space-y-6">
+        <div className="max-w-md w-full space-y-5 bg-[#0e0c1a]/95 border border-[#1e1a38] p-6 md:p-8 rounded-3xl shadow-2xl relative">
+          
+          {/* Header Typography */}
           <div>
-            <div className="font-bebas text-5xl text-gradient bg-clip-text text-transparent bg-gradient-to-r from-[#f0c972] to-[#e07b3f] tracking-widest mb-1 animate-pulse">
+            <div className="font-bebas text-5xl text-gradient bg-clip-text text-transparent bg-gradient-to-r from-[#f0c972] to-[#e07b3f] tracking-widest mb-1">
               LIFE DASHBOARD
             </div>
             <p className="font-mono text-[10px] text-[#6b6485] tracking-widest uppercase">
@@ -1032,14 +1488,15 @@ export default function App() {
             </p>
           </div>
 
-          <p className="font-mono text-xs text-[#9991b8] max-w-[280px] mx-auto leading-relaxed">
-            Securely sign in using your Google Account to synchronize training routines, calendars, and nutrition goals instantly.
+          <p className="font-mono text-[11px] text-[#9991b8] max-w-[340px] mx-auto leading-relaxed">
+            Synchronize training templates, water targets, nutrition, weights, and AI coach history live across all your devices.
           </p>
 
-          <div className="flex flex-col gap-3 justify-center items-center">
+          <div className="space-y-4">
+            {/* Primary Google Login Button */}
             <button
               onClick={handleGoogleLogin}
-              className="w-full flex items-center justify-center gap-3 bg-[#13111f] border border-[#2a2440] hover:border-[#f0c972] rounded-2xl px-6 py-3.5 text-xs text-white font-mono shadow-xl cursor-pointer active:scale-95 transition-all animate-fade-in"
+              className="w-full flex items-center justify-center gap-3 bg-[#13111f] border border-[#2a2440] hover:border-[#f0c972] rounded-2xl px-6 py-3 text-xs text-white font-mono shadow-xl cursor-pointer active:scale-95 transition-all"
             >
               <svg className="w-5 h-5 flex-shrink-0" viewBox="0 0 48 48">
                 <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
@@ -1050,29 +1507,116 @@ export default function App() {
               Sign in with Google
             </button>
 
+            {/* GitHub Login Button */}
             <button
-              onClick={() => {
-                const guestProfile = {
-                  uid: "local-guest-user",
-                  displayName: "Guest Athlete",
-                  email: "guest@example.com",
-                  photoURL: ""
-                };
-                setUser(guestProfile);
-                localStorage.setItem("life_dashboard_cached_user", JSON.stringify(guestProfile));
-                document.cookie = `is_authenticated=true; max-age=2592000; path=/`;
-                setAuthError(null);
-              }}
-              className="w-full flex items-center justify-center gap-2 bg-[#0d0b14] border border-[#221d35] hover:border-[#6b6485] hover:text-white rounded-2xl px-6 py-3.5 text-[11px] text-[#6b6485] font-mono shadow-md cursor-pointer active:scale-95 transition-all"
+              onClick={handleGithubLogin}
+              className="w-full flex items-center justify-center gap-3 bg-[#13111f] border border-[#2a2440] hover:border-[#f0c972] rounded-2xl px-6 py-3 text-xs text-white font-mono shadow-xl cursor-pointer active:scale-95 transition-all"
             >
-              Enter as Guest (Local Sandbox)
+              <svg className="w-5 h-5 flex-shrink-0 text-white fill-current" viewBox="0 0 24 24">
+                <path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/>
+              </svg>
+              Sign in with GitHub
             </button>
+
+            {/* Separator */}
+            <div className="relative flex py-2 items-center">
+              <div className="flex-grow border-t border-[#1e1a38]"></div>
+              <span className="flex-shrink mx-3 text-[#524970] text-[9px] font-mono tracking-widest uppercase">
+                Or Sync with Email
+              </span>
+              <div className="flex-grow border-t border-[#1e1a38]"></div>
+            </div>
+
+            {/* Email Form */}
+            <form onSubmit={handleEmailAuth} className="space-y-3.5 text-left">
+              {isAuthSignUp && (
+                <div>
+                  <label className="block text-[9px] font-mono uppercase text-[#7f74a8] mb-1">Your Full Name</label>
+                  <input
+                    type="text"
+                    value={authDisplayName}
+                    onChange={(e) => setAuthDisplayName(e.target.value)}
+                    placeholder="e.g. Max Sullivan"
+                    className="w-full bg-[#13111f] border border-[#2a2440] hover:border-[#6b6485] focus:border-[#f0c972] transition-colors rounded-xl px-4 py-2.5 text-xs text-white placeholder-[#453e5e] font-mono outline-none"
+                    required
+                  />
+                </div>
+              )}
+
+              <div>
+                <label className="block text-[9px] font-mono uppercase text-[#7f74a8] mb-1">Email Address</label>
+                <input
+                  type="email"
+                  value={authEmail}
+                  onChange={(e) => setAuthEmail(e.target.value)}
+                  placeholder="me@example.com"
+                  className="w-full bg-[#13111f] border border-[#2a2440] hover:border-[#6b6485] focus:border-[#f0c972] transition-colors rounded-xl px-4 py-2.5 text-xs text-white placeholder-[#453e5e] font-mono outline-none"
+                  required
+                />
+              </div>
+
+              <div>
+                <div className="flex justify-between items-center mb-1">
+                  <label className="block text-[9px] font-mono uppercase text-[#7f74a8]">Password</label>
+                  {!isAuthSignUp && (
+                    <button
+                      type="button"
+                      onClick={handleForgotPassword}
+                      className="text-[9px] text-[#6b6485] font-mono hover:text-[#f0c972] focus:outline-none cursor-pointer"
+                    >
+                      Forgot?
+                    </button>
+                  )}
+                </div>
+                <input
+                  type="password"
+                  value={authPassword}
+                  onChange={(e) => setAuthPassword(e.target.value)}
+                  placeholder="••••••••"
+                  className="w-full bg-[#13111f] border border-[#2a2440] hover:border-[#6b6485] focus:border-[#f0c972] transition-colors rounded-xl px-4 py-2.5 text-xs text-white placeholder-[#453e5e] font-mono outline-none"
+                  required
+                />
+              </div>
+
+              <button
+                type="submit"
+                className="w-full bg-[#f0c972] hover:bg-[#e07b3f] text-[#0d0b14] font-mono font-bold text-xs py-3 rounded-xl active:scale-95 transition-all text-center cursor-pointer shadow-lg shadow-amber-500/5 mt-2"
+              >
+                {isAuthSignUp ? "CREATE MULTI-DEVICE ACCOUNT" : "SIGN IN WITH EMAIL"}
+              </button>
+
+              <div className="text-center pt-1.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsAuthSignUp(!isAuthSignUp);
+                    setAuthError(null);
+                    setAuthSuccessMessage(null);
+                  }}
+                  className="text-[11px] text-[#9991b8] hover:text-white font-mono transition-colors focus:outline-none cursor-pointer"
+                >
+                  {isAuthSignUp ? (
+                    <>Already have an account? <span className="text-[#f0c972] underline font-bold">Sign In</span></>
+                  ) : (
+                    <>Need mobile cross-device sync? <span className="text-[#f0c972] underline font-bold">Create Account</span></>
+                  )}
+                </button>
+              </div>
+            </form>
           </div>
 
+          {/* Success messages */}
+          {authSuccessMessage && (
+            <div className="w-full p-4 rounded-xl border border-emerald-500/20 bg-emerald-400/5 text-left font-mono text-[11px] text-emerald-400">
+              {authSuccessMessage}
+            </div>
+          )}
+
+          {/* Error messages */}
           {authError && (
             <div className="w-full p-4 rounded-xl border border-red-500/20 bg-red-400/5 text-left font-mono text-[11px] text-[#ff6b6b] space-y-3">
               <div className="font-bold flex items-center gap-1.5 text-xs text-red-400">
-                <span>⚠️</span> AUTHENTICATION ERROR
+                <span>⚠️</span> ERROR OCCURRED
               </div>
               <p className="leading-relaxed text-[#c3b6dc]">
                 {authError.message || String(authError)}
@@ -1086,12 +1630,42 @@ export default function App() {
                     <li>Add your preview domain <span className="bg-[#1c182c] px-1.5 py-0.5 rounded text-white select-all font-bold">{window.location.host}</span> to the list.</li>
                   </ol>
                   <p className="text-[9px] text-[#6b6485] leading-relaxed pt-1">
-                    Alternatively, click <span className="text-[#f0c972]">"Enter as Guest"</span> above to bypass Google Sign-In entirely and test the full feature set with local persistence!
+                    Alternatively, register / login with Email & Password or Enter as Guest above to bypass domain blocks!
                   </p>
                 </div>
               )}
             </div>
           )}
+
+          {/* Secondary Guest Option */}
+          <div className="pt-2 border-t border-[#1e1a38]/50">
+            <button
+              onClick={() => {
+                const guestDeviceId = (() => {
+                  let id = localStorage.getItem("life_dashboard_guest_device_id");
+                  if (!id) {
+                    id = "device_" + Math.random().toString(36).substring(2, 12);
+                    localStorage.setItem("life_dashboard_guest_device_id", id);
+                  }
+                  return id;
+                })();
+                const guestProfile = {
+                  uid: "guest_" + guestDeviceId,
+                  displayName: "Guest Athlete",
+                  email: "guest@example.com",
+                  photoURL: ""
+                };
+                setUser(guestProfile);
+                localStorage.setItem("life_dashboard_cached_user", JSON.stringify(guestProfile));
+                document.cookie = `is_authenticated=true; max-age=2592000; path=/`;
+                setAuthError(null);
+              }}
+              className="w-full flex items-center justify-center gap-2 bg-[#09070e] border border-[#1e1932] hover:border-[#6b6485] hover:text-white rounded-xl px-4 py-2.5 text-[10px] text-[#6b6485] font-mono shadow-md cursor-pointer active:scale-95 transition-all"
+            >
+              Enter as Guest (Local Sandbox Only)
+            </button>
+          </div>
+
         </div>
       </div>
     );
@@ -1099,8 +1673,98 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-[#0d0b14] text-[#e8e3f8] flex flex-col relative select-none">
+      {/* Guest Device Alert Bar of Cloud Sync status */}
+      {user?.uid?.startsWith("guest_") && (
+        <div className="bg-gradient-to-r from-amber-500/20 via-[#1a162b] to-[#120f21] border-b border-amber-500/20 py-2.5 px-4 text-center shrink-0 flex items-center justify-center gap-2 max-w-md md:max-w-4xl lg:max-w-5xl xl:max-w-6xl w-full mx-auto animate-fade-in">
+          <span className="text-xs text-amber-200/95 font-mono flex items-center gap-1.5 leading-relaxed text-left">
+            <span>🛡️</span>
+            <span>
+              <strong>Guest Sandbox:</strong> All your weight, nutrition, and workout stats are saved locally in the cache of this device. 
+              <button 
+                onClick={handleSignOut}
+                className="ml-2 underline text-[#f0c972] hover:text-[#e07b3f] text-[11px] font-bold tracking-tight inline focus:outline-none cursor-pointer"
+              >
+                Sign in with Google
+              </button> to permanently sync stats across your computer and phone.
+            </span>
+          </span>
+        </div>
+      )}
+
+      {/* Success Integration Floating Toast */}
+      {justMerged && (
+        <div className="fixed bottom-24 left-1/2 -translate-x-1/2 bg-[#13111f]/95 border-2 border-green-500 shadow-2xl shadow-green-500/10 px-5 py-3 rounded-2xl z-50 flex items-center gap-2.5 max-w-sm w-max animate-bounce">
+          <span className="text-lg">✅</span>
+          <div className="flex flex-col text-left">
+            <span className="text-xs text-white font-mono font-bold uppercase block">Cloud Integration Online</span>
+            <span className="text-[10px] text-[#9991b8] font-mono mt-0.5">Device stats successfully merged with Google!</span>
+          </div>
+        </div>
+      )}
+
+      {/* Merge Modal Overlay */}
+      {showMergePrompt && localGuestDataToMerge && (
+        <div className="fixed inset-0 bg-[#0d0b14dd] backdrop-blur-md z-50 flex items-center justify-center p-4">
+          <div className="bg-[#13111f] border-2 border-[#f0c972]/30 rounded-3xl p-6 max-w-md w-full shadow-2xl relative flex flex-col gap-5 animate-in fade-in zoom-in-95 duration-200">
+            <div className="text-center space-y-2">
+              <span className="text-3xl block">☁️</span>
+              <h2 className="font-bebas text-3xl tracking-widest text-[#f0c972] uppercase">Sync Stats to Google</h2>
+              <p className="font-mono text-xs text-[#9991b8] leading-relaxed text-center">
+                We found pre-existing weight logs, nutrition tracking, or workout routines stored on your offline Guest profile.
+              </p>
+            </div>
+
+            <div className="bg-[#09070f] border border-[#2a2440] rounded-2xl p-4.5 space-y-2 text-left">
+              <span className="text-[9.5px] font-mono tracking-widest text-[#6b6485] uppercase block font-bold">Consolidating Profiles:</span>
+              <ul className="text-[11px] text-[#c3b6dc] font-mono space-y-1.5 leading-relaxed">
+                {localGuestDataToMerge.weightLog && localGuestDataToMerge.weightLog.length > 0 && (
+                  <li className="flex items-center gap-1.5">📈 {localGuestDataToMerge.weightLog.length} Weight logs</li>
+                )}
+                {localGuestDataToMerge.foodLog && Object.keys(localGuestDataToMerge.foodLog).length > 0 && (
+                  <li className="flex items-center gap-1.5">🥗 Active Nutrition & Meal archives</li>
+                )}
+                {localGuestDataToMerge.waterLog && Object.keys(localGuestDataToMerge.waterLog).length > 0 && (
+                  <li className="flex items-center gap-1.5">💧 Hydration tracking progress</li>
+                )}
+                {localGuestDataToMerge.routines && localGuestDataToMerge.routines.length > 0 && (
+                  <li className="flex items-center gap-1.5">🏋️ {localGuestDataToMerge.routines.length} Custom exercise routines</li>
+                )}
+              </ul>
+            </div>
+
+            <div className="flex flex-col gap-2 pt-1 font-mono">
+              <button
+                onClick={handleMergeAndSyncGuestData}
+                disabled={isCloudSyncing}
+                className="w-full bg-[#f0c972] text-[#0d0b14] hover:bg-[#e07b3f] disabled:opacity-50 disabled:cursor-not-allowed font-bold rounded-2xl py-3.5 text-xs shadow-xl active:scale-95 transition-all cursor-pointer flex items-center justify-center gap-1.5"
+              >
+                {isCloudSyncing ? (
+                  <>
+                    <div className="w-3 border-2 border-[#0d0b14] border-t-transparent rounded-full animate-spin shrink-0 aspect-square" />
+                    <span>Synchronizing Google Account Profile...</span>
+                  </>
+                ) : (
+                  <span>Merge with Google Cloud Account</span>
+                )}
+              </button>
+              <button
+                onClick={handleDeclineMerge}
+                disabled={isCloudSyncing}
+                className="w-full bg-[#1b172d]/80 border border-[#2e2652] hover:border-red-400 text-[#9991b8] hover:text-red-400 disabled:opacity-40 disabled:cursor-not-allowed rounded-2xl py-3 text-xs active:scale-95 transition-all cursor-pointer"
+              >
+                Keep Independent (Start Fresh)
+              </button>
+            </div>
+            
+            <p className="font-mono text-[9px] text-[#6b6485] text-center leading-relaxed">
+              Merging combines logs so you don't lose any data across phone and computer.
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* Upper Account Bar details */}
-      <header className="flex justify-between items-center px-4 py-3 border-b border-[#221d35] shrink-0 sticky top-0 bg-[#0d0b14dd] backdrop-blur z-40 max-w-md w-full mx-auto">
+      <header className="flex justify-between items-center px-4 py-3 border-b border-[#221d35] shrink-0 sticky top-0 bg-[#0d0b14dd] backdrop-blur z-40 max-w-md md:max-w-4xl lg:max-w-5xl xl:max-w-6xl w-full mx-auto transition-all">
         <div 
           onClick={() => setShowSettings(true)}
           className="flex items-center gap-2 cursor-pointer hover:opacity-85 select-none transition-all active:scale-[0.98]"
@@ -1121,12 +1785,20 @@ export default function App() {
           </div>
         </div>
 
-        <button
-          onClick={handleSignOut}
-          className="bg-transparent border border-[#221d35] rounded-lg px-2.5 py-1 text-[9px] font-mono text-[#3d3657] hover:text-[#9991b8] active:scale-95 transition-all cursor-pointer"
-        >
-          Sign out
-        </button>
+        <div className="flex items-center gap-2">
+          <a
+            href="/"
+            className="flex items-center gap-1 bg-[#13111f] border border-[#2a2440] hover:border-[#f0c972] rounded-lg px-2.5 py-1.5 text-[9px] font-mono font-bold text-[#e8e3f8] hover:text-white active:scale-95 transition-all cursor-pointer select-none"
+          >
+            ← Back to Hub
+          </a>
+          <button
+            onClick={handleSignOut}
+            className="bg-transparent border border-[#221d35] rounded-lg px-2.5 py-1.5 text-[9px] font-mono text-[#3d3657] hover:text-[#9991b8] active:scale-95 transition-all cursor-pointer"
+          >
+            Sign out
+          </button>
+        </div>
       </header>
 
       {/* Main tab elements content wrapper */}
@@ -1185,6 +1857,7 @@ export default function App() {
                   setUserState(updated);
                   updateFirestore(updated);
                 }}
+                onKeyboardToggle={setWorkoutKeyboardOpen}
               />
             )}
 
@@ -1226,19 +1899,31 @@ export default function App() {
                 onToggleSuppCheck={handleToggleSuppCheck}
               />
             )}
+
+            {activeTab === "ai" && (
+              <AICoachTab
+                userState={userState}
+                onUpdateUserState={(updated) => {
+                  setUserState(updated);
+                  updateFirestore(updated);
+                }}
+                onAddTodayGoal={handleAddTodayGoal}
+                onUpdateWaterGoal={handleUpdateWaterGoal}
+              />
+            )}
+
+            {activeTab === "caffeine" && (
+              <CaffeineTab
+                userState={userState}
+                onUpdateUserState={(updated) => {
+                  setUserState(updated);
+                  updateFirestore(updated);
+                }}
+              />
+            )}
           </motion.div>
         </AnimatePresence>
       </main>
-
-      {/* Persistent floating Coach overlay */}
-      <AIFieldCoach
-        userState={userState}
-        onSaveRoutine={handleSaveRoutine}
-        onAddTodayGoal={handleAddTodayGoal}
-        onUpdateWaterGoal={handleUpdateWaterGoal}
-        onUpdateCalorieTarget={handleUpdateCalorieTarget}
-        setActiveTab={setActiveTab}
-      />
 
       {/* Settings Modal Overlay Page */}
       {showSettings && (
@@ -1386,7 +2071,7 @@ export default function App() {
                       }
 
                       try {
-                        if (user && user.uid !== "local-guest-user") {
+                        if (user) {
                           const { deleteDoc, doc } = await import("firebase/firestore");
                           await deleteDoc(doc(db, "users", user.uid));
                         }
@@ -1432,7 +2117,11 @@ export default function App() {
       )}
 
       {/* Persistent global Floating Plus Button and sub-menus */}
-      <div className="fixed bottom-20 right-4 z-50 flex flex-col items-end gap-2">
+      <motion.div
+        className="fixed bottom-20 right-4 z-50 flex flex-col items-end gap-2"
+        animate={{ y: workoutKeyboardOpen ? 120 : 0, opacity: workoutKeyboardOpen ? 0 : 1 }}
+        transition={{ type: "tween", ease: "easeOut", duration: 0.25 }}
+      >
         <AnimatePresence>
           {isAddMenuOpen && (
             <motion.div
@@ -1498,7 +2187,7 @@ export default function App() {
         >
           +
         </button>
-      </div>
+      </motion.div>
 
       {/* Global input Modals Layer */}
       <AnimatePresence>
@@ -1671,6 +2360,7 @@ export default function App() {
               {/* MODAL 4: ADD FOOD (REVAMPED CAL AI FIELD COACH SCANNER) */}
               {activeAddModal === "food" && (
                 <AIFoodTracker
+                  userState={userState}
                   onClose={() => setActiveAddModal(null)}
                   onLogFood={(name, cals, prot, carbs, fat, barcode, quantity) => {
                     handleLogFood(name, cals, prot, carbs, fat, barcode, quantity || 1);
@@ -1997,12 +2687,14 @@ export default function App() {
       </AnimatePresence>
 
       {/* Global Tabbar footer */}
-      <nav className="fixed bottom-0 left-0 right-0 h-16 bg-[#0d0b14ee] border-t border-[#221d35] flex items-center justify-around backdrop-blur-xl z-40 max-w-md w-full mx-auto">
+      <nav className="fixed bottom-0 left-0 right-0 h-16 bg-[#0d0b14ee]/95 border-t border-[#221d35] flex items-center justify-around backdrop-blur-xl z-40 max-w-md md:max-w-[560px] w-full mx-auto md:bottom-4 md:rounded-2xl md:border md:shadow-[0_8px_32px_rgba(0,0,0,0.5)] transition-all">
         {[
           { key: "home", label: "Home", icon: "🏠" },
-          { key: "fitness", label: "Fitness", icon: "🏋️" },
+          { key: "fitness", label: "Fitness", icon: "💪" },
           { key: "health", label: "Health", icon: "💊" },
-          { key: "calendar", label: "Calendar", icon: "📅" }
+          { key: "calendar", label: "Calendar", icon: "📅" },
+          { key: "ai", label: "Coach", icon: "🤖" },
+          { key: "caffeine", label: "Caffeine", icon: "☕" }
         ].map(tab => (
           <button
             key={tab.key}

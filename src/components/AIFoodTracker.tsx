@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { Html5Qrcode } from "html5-qrcode";
+import { UserState, getLocalDateString } from "../types";
 
 // Types for components
 interface IngredientItem {
@@ -33,6 +34,7 @@ interface AIFoodTrackerProps {
   ) => void;
   onClose: () => void;
   onOpenWorkoutModal?: () => void;
+  userState?: UserState;
 }
 
 // 6 premium food preset items
@@ -168,10 +170,91 @@ const PRESET_FOODS = [
 export default function AIFoodTracker({
   onLogFood,
   onClose,
-  onOpenWorkoutModal
+  onOpenWorkoutModal,
+  userState
 }: AIFoodTrackerProps) {
-  // Modes: "menu" | "camera" | "analyzing" | "results" | "manual" | "search" | "barcode"
-  const [trackerMode, setTrackerMode] = useState<"menu" | "camera" | "analyzing" | "results" | "manual" | "search" | "barcode">("menu");
+  // Modes: "menu" | "camera" | "analyzing" | "results" | "manual" | "search" | "barcode" | "recipe"
+  const [trackerMode, setTrackerMode] = useState<"menu" | "camera" | "analyzing" | "results" | "manual" | "search" | "barcode" | "recipe">("menu");
+  
+  // Recipe generator parameters
+  const [recipeMealType, setRecipeMealType] = useState<"Breakfast" | "Lunch" | "Dinner" | "Snack">("Lunch");
+  const [recipeFocus, setRecipeFocus] = useState<"Muscle Gain" | "Fat Loss" | "Balanced" | "Keto">("Muscle Gain");
+  const [recipeExclusions, setRecipeExclusions] = useState("");
+  const [recipePrepTime, setRecipePrepTime] = useState<"Under 15 mins" | "Under 30 mins" | "Under 45 mins">("Under 30 mins");
+  const [generatedRecipe, setGeneratedRecipe] = useState<{
+    recipeName: string;
+    prepTime: string;
+    cookingTime: string;
+    servings: number;
+    calories: number;
+    protein: number;
+    carbs: number;
+    fat: number;
+    description: string;
+    ingredients: string[];
+    instructions: string[];
+  } | null>(null);
+  const [isGeneratingRecipe, setIsGeneratingRecipe] = useState(false);
+  const [recipeError, setRecipeError] = useState("");
+
+  // Targets and real-time macros calculations
+  const todayKey = getLocalDateString();
+  const loggedToday = userState?.foodLog?.[todayKey] || [];
+  const totalCalToday = loggedToday.reduce((sum, entry) => sum + (entry.calories * entry.quantity), 0);
+  const totalProteinToday = loggedToday.reduce((sum, entry) => sum + (entry.protein * entry.quantity), 0);
+  const totalCarbsToday = loggedToday.reduce((sum, entry) => sum + (entry.carbs * entry.quantity), 0);
+  const totalFatToday = loggedToday.reduce((sum, entry) => sum + (entry.fat * entry.quantity), 0);
+
+  const calorieGoal = userState?.calorieGoal || 2000;
+  const proteinGoalPct = userState?.proteinGoalPct || 30;
+  const carbGoalPct = userState?.carbGoalPct || 40;
+  const fatGoalPct = userState?.fatGoalPct || 30;
+
+  const proteinGoalGrams = Math.round((calorieGoal * proteinGoalPct / 100) / 4);
+  const carbGoalGrams = Math.round((calorieGoal * carbGoalPct / 100) / 4);
+  const fatGoalGrams = Math.round((calorieGoal * fatGoalPct / 100) / 9);
+
+  const remCalories = Math.max(0, calorieGoal - totalCalToday);
+  const remProtein = Math.max(0, proteinGoalGrams - totalProteinToday);
+  const remCarbs = Math.max(0, carbGoalGrams - totalCarbsToday);
+  const remFat = Math.max(0, fatGoalGrams - totalFatToday);
+
+  const handleGenerateRecipe = async () => {
+    setIsGeneratingRecipe(true);
+    setRecipeError("");
+    setGeneratedRecipe(null);
+    try {
+      const response = await fetch("/api/generate-recipe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          calorieGoal,
+          proteinGoalPct,
+          carbGoalPct,
+          fatGoalPct,
+          remainingCalories: remCalories,
+          remainingProtein: remProtein,
+          remainingCarbs: remCarbs,
+          remainingFat: remFat,
+          mealType: recipeMealType,
+          focus: recipeFocus,
+          exclusions: recipeExclusions,
+          prepTime: recipePrepTime
+        })
+      });
+      if (response.ok) {
+        const data = await response.json();
+        setGeneratedRecipe(data);
+      } else {
+        throw new Error("Failed to reach server-side recipe builder.");
+      }
+    } catch (err: any) {
+      console.error(err);
+      setRecipeError("An error occurred during recipe generation. Standard fallback performance meal served instead!");
+    } finally {
+      setIsGeneratingRecipe(false);
+    }
+  };
   
   // Custom meal logging options
   const [capturedImage, setCapturedImage] = useState<string | null>(null);
@@ -560,6 +643,7 @@ export default function AIFoodTracker({
             {trackerMode === "results" && "AI DIETMETRIC RESULTS"}
             {trackerMode === "search" && "DATABASE SEARCH"}
             {trackerMode === "barcode" && "BARCODE SCAN LENS"}
+            {trackerMode === "recipe" && "AI PERFORMANCE CHEF"}
           </span>
         </div>
       </div>
@@ -659,7 +743,7 @@ export default function AIFoodTracker({
                   <div className="flex items-center gap-3">
                     <span className="text-xl shrink-0 p-1.5 rounded-lg bg-[#211a3b]/50">{meal.icon}</span>
                     <div className="min-w-0 pr-2">
-                      <span className="font-bebas text-xs text-white block uppercase tracking-wide leading-none">{meal.name}</span>
+                       <span className="font-bebas text-xs text-white block uppercase tracking-wide leading-none">{meal.name}</span>
                       <span className="text-[8.5px] text-[#6b6485] font-mono block mt-1 truncate">{meal.desc}</span>
                     </div>
                   </div>
@@ -670,6 +754,288 @@ export default function AIFoodTracker({
                 </button>
               ))}
             </div>
+
+            {/* GOALS-BASED AI PERFORMANCE RECIPE CARD */}
+            <button
+              type="button"
+              onClick={() => {
+                setTrackerMode("recipe");
+              }}
+              className="group relative flex items-center gap-4 p-4.5 rounded-2xl bg-gradient-to-r from-[#211a3d] via-[#161226] to-[#2a163d] border-2 border-[#f0c972]/30 hover:border-[#f0c972]/60 text-left shadow-xl hover:shadow-[#f0c972]/5 cursor-pointer active:scale-[0.98] transition-all overflow-hidden w-full mt-1.5"
+            >
+              <div className="absolute top-2 right-2 text-[6.5px] font-mono font-bold bg-[#f0c972]/20 text-[#fbcfe8] px-2 py-0.5 rounded-full uppercase tracking-wider">AI CHEF</div>
+              <span className="text-3.5xl group-hover:rotate-12 transition-transform select-none">🥗</span>
+              <div>
+                <span className="font-bebas text-sm text-[#f0c972] uppercase tracking-wider block font-bold">Goals-Based Recipe Generator</span>
+                <span className="text-[8.5px] text-[#9a8faf] font-mono leading-relaxed mt-1 block">
+                  Autonomously crafts bespoke single-portion recipes perfectly calibrated to fit your remaining target protein & calories for today!
+                </span>
+              </div>
+            </button>
+          </div>
+        )}
+
+        {/* VIEW: SPORT PERFORMANCE AI RECIPE GENERATOR */}
+        {trackerMode === "recipe" && (
+          <div className="flex flex-col gap-4 overflow-y-auto flex-1 min-h-0 pr-1 pb-6 text-left">
+            <div className="bg-[#110e1f] border border-[#251e3e] rounded-2xl p-4 shadow-xl flex flex-col gap-4">
+              <div className="flex justify-between items-start">
+                <div>
+                  <span className="text-[9.5px] font-mono text-[#f0c972] tracking-wider uppercase block font-bold">Sports Nutrition Calculator</span>
+                  <span className="font-bebas text-lg text-white block uppercase tracking-wide leading-tight mt-0.5 font-bold">Macro Goals Target Left</span>
+                </div>
+                <span className="text-2xl select-none">📊</span>
+              </div>
+
+              {/* Targets Progress Bars */}
+              <div className="grid grid-cols-2 gap-3.5 bg-[#0d0b14] border border-[#221d3f] p-3 rounded-xl font-mono text-[10px]">
+                <div>
+                  <span className="text-gray-400">Calories Budget Left:</span>
+                  <span className="text-[#fbcfe8] block font-bold text-sm mt-0.5">{remCalories} kcal / {calorieGoal} kcal</span>
+                  <div className="w-full bg-[#1b152d] h-1.5 rounded-full mt-1.5 overflow-hidden">
+                    <div className="bg-pink-500 h-full rounded-full animate-none" style={{ width: `${Math.min(100, (remCalories / calorieGoal) * 100)}%` }} />
+                  </div>
+                </div>
+
+                <div>
+                  <span className="text-gray-400">Protein Target Left:</span>
+                  <span className="text-green-300 block font-bold text-sm mt-0.5">{remProtein}g / {proteinGoalGrams}g</span>
+                  <div className="w-full bg-[#1b152d] h-1.5 rounded-full mt-1.5 overflow-hidden">
+                    <div className="bg-green-400 h-full rounded-full animate-none" style={{ width: `${Math.min(100, (remProtein / Math.max(1, proteinGoalGrams)) * 100)}%` }} />
+                  </div>
+                </div>
+
+                <div>
+                  <span className="text-gray-400">Carbs Left:</span>
+                  <span className="text-blue-300 block font-bold text-[11px] mt-0.5">{remCarbs}g / {carbGoalGrams}g</span>
+                </div>
+
+                <div>
+                  <span className="text-gray-400">Fats Left:</span>
+                  <span className="text-amber-300 block font-bold text-[11px] mt-0.5">{remFat}g / {fatGoalGrams}g</span>
+                </div>
+              </div>
+            </div>
+
+            {/* If no recipe has been generated yet, show the builders form */}
+            {!generatedRecipe && !isGeneratingRecipe && (
+              <div className="bg-[#110e1f] border border-[#251e3e] rounded-2xl p-4 shadow-xl flex flex-col gap-4">
+                <span className="text-[10px] font-mono text-pink-400 uppercase tracking-widest block font-bold">Preferences Formulation</span>
+
+                {/* Meal Type Option Selector */}
+                <div>
+                  <label className="font-mono text-[9px] text-[#867ea3] uppercase tracking-wider block mb-1.5 font-bold">Intended Meal course</label>
+                  <div className="grid grid-cols-4 gap-1.5 text-center font-mono text-[10px]">
+                    {(["Breakfast", "Lunch", "Dinner", "Snack"] as const).map((meal) => (
+                      <button
+                        key={meal}
+                        type="button"
+                        onClick={() => setRecipeMealType(meal)}
+                        className={`py-2 rounded-xl border font-bold transition-all cursor-pointer ${
+                          recipeMealType === meal
+                            ? "bg-[#fbcfe8] border-[#fbcfe8] text-[#0d0b14]"
+                            : "bg-[#18152c] border-[#251e3e] text-gray-400 hover:text-white"
+                        }`}
+                      >
+                        {meal}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Nutritional Focus style */}
+                <div>
+                  <label className="font-mono text-[9px] text-[#867ea3] uppercase tracking-wider block mb-1.5 font-bold font-bold">Primary Nutrition Focus</label>
+                  <div className="grid grid-cols-2 gap-1.5 text-center font-mono text-[10px]">
+                    {(["Muscle Gain", "Fat Loss", "Balanced", "Keto"] as const).map((style) => (
+                      <button
+                        key={style}
+                        type="button"
+                        onClick={() => setRecipeFocus(style)}
+                        className={`py-2 rounded-xl border font-bold transition-all cursor-pointer ${
+                          recipeFocus === style
+                            ? "bg-[#6fcf97] border-[#6fcf97] text-[#0d0b14]"
+                            : "bg-[#18152c] border-[#251e3e] text-gray-400 hover:text-white"
+                        }`}
+                      >
+                        {style === "Muscle Gain" ? "💪 Muscle Gain" : style === "Fat Loss" ? "🔥 Fat Shred" : style === "Balanced" ? "⚖️ Active Balanced" : "🥩 Clean Keto"}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Exclusions input field */}
+                <div>
+                  <label className="font-mono text-[9px] text-[#867ea3] uppercase tracking-wider block mb-1.5 font-bold font-bold">Exclude Ingredients / Allergies</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. peanuts, dairy, shellfish..."
+                    value={recipeExclusions}
+                    onChange={(e) => setRecipeExclusions(e.target.value)}
+                    className="w-full bg-[#18152c] border border-[#251e3e] rounded-xl px-3 py-2.5 text-xs font-mono text-white placeholder-gray-600 focus:outline-none focus:border-pink-300"
+                  />
+                </div>
+
+                {/* Prep Time constraint */}
+                <div>
+                  <label className="font-mono text-[9px] text-[#867ea3] uppercase tracking-wider block mb-1.5 font-bold font-bold">Max Prep time</label>
+                  <div className="grid grid-cols-3 gap-1.5 text-center font-mono text-[10px]">
+                    {(["Under 15 mins", "Under 30 mins", "Under 45 mins"] as const).map((time) => (
+                      <button
+                        key={time}
+                        type="button"
+                        onClick={() => setRecipePrepTime(time)}
+                        className={`py-2 rounded-xl border font-bold transition-all cursor-pointer ${
+                          recipePrepTime === time
+                            ? "bg-[#f0c972] border-[#f0c972] text-[#0d0b14]"
+                            : "bg-[#18152c] border-[#251e3e] text-gray-400 hover:text-white"
+                        }`}
+                      >
+                        {time}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Big Submit Button */}
+                <button
+                  type="button"
+                  onClick={handleGenerateRecipe}
+                  className="w-full bg-gradient-to-r from-pink-500 to-rose-500 hover:from-pink-400 hover:to-rose-400 text-white font-bebas text-sm py-4 rounded-xl mt-2 tracking-wider font-bold shadow-lg shadow-pink-500/10 cursor-pointer active:scale-98 transition-all text-center uppercase"
+                >
+                  🥗 Build Custom Goals Recipe
+                </button>
+              </div>
+            )}
+
+            {/* Loading Stage */}
+            {isGeneratingRecipe && (
+              <div className="bg-[#110e1f] border border-[#2a2440] rounded-2xl p-8 shadow-xl text-center flex flex-col items-center justify-center gap-4 py-16">
+                <span className="text-4xl animate-bounce">👨‍🍳</span>
+                <div>
+                  <span className="font-bebas text-lg text-white block tracking-wider uppercase animate-pulse font-bold">Consulting performance culinary chef...</span>
+                  <span className="font-mono text-[9px] text-[#867ea3] block mt-1 uppercase">Formulating food combinations matching remaining targets</span>
+                </div>
+                <div className="w-16 h-1 bg-gradient-to-r from-pink-500 to-rose-500 rounded-full animate-pulse mt-1" />
+              </div>
+            )}
+
+            {/* Error stage */}
+            {recipeError && !generatedRecipe && (
+              <div className="bg-[#110e1f] border border-red-500/20 rounded-2xl p-4 text-center">
+                <p className="font-mono text-xs text-red-400 mb-2">{recipeError}</p>
+                <button
+                  type="button"
+                  onClick={() => setRecipeError("")}
+                  className="bg-[#18152c] border border-[#251e3e] text-white rounded-xl px-4 py-2 text-xs font-mono cursor-pointer"
+                >
+                  Try Again
+                </button>
+              </div>
+            )}
+
+            {/* Generated results show card */}
+            {generatedRecipe && (
+              <div className="flex flex-col gap-4">
+                <div className="bg-[#110e1f] border border-[#251e3e] rounded-2xl p-4 shadow-xl text-left flex flex-col gap-4 relative overflow-hidden">
+                  <div className="absolute top-0 right-0 p-3 bg-green-500/10 border-l border-b border-green-500/20 rounded-bl-xl font-mono text-[8.5px] text-green-300 font-bold uppercase tracking-wider">
+                    chef approved ✓
+                  </div>
+
+                  {/* Header info */}
+                  <div>
+                    <span className="font-bebas text-lg text-white block uppercase tracking-wider font-bold">{generatedRecipe.recipeName}</span>
+                    <span className="text-[10px] text-pink-300 font-mono block mt-1">{generatedRecipe.description}</span>
+                  </div>
+
+                  {/* Macro Pills */}
+                  <div className="grid grid-cols-4 gap-1.5 text-center font-mono text-[9.5px]">
+                    <div className="bg-[#1b152d] border border-pink-500/20 py-2 rounded-xl">
+                      <span className="text-gray-400 block text-[7.5px] uppercase">Calories</span>
+                      <span className="text-[#fbcfe8] font-bold block mt-0.5">{generatedRecipe.calories} kcal</span>
+                    </div>
+                    <div className="bg-[#1b152d] border border-green-500/20 py-2 rounded-xl">
+                      <span className="text-gray-400 block text-[7.5px] uppercase font-bold">Protein</span>
+                      <span className="text-green-300 font-bold block mt-0.5">{generatedRecipe.protein}g</span>
+                    </div>
+                    <div className="bg-[#1b152d] border border-blue-500/20 py-2 rounded-xl">
+                      <span className="text-gray-400 block text-[7.5px] uppercase font-bold">Carbs</span>
+                      <span className="text-blue-300 font-bold block mt-0.5">{generatedRecipe.carbs}g</span>
+                    </div>
+                    <div className="bg-[#1b152d] border border-amber-500/20 py-2 rounded-xl">
+                      <span className="text-gray-400 block text-[7.5px] uppercase font-bold">Fat</span>
+                      <span className="text-amber-300 font-bold block mt-0.5">{generatedRecipe.fat}g</span>
+                    </div>
+                  </div>
+
+                  {/* Cooking meta */}
+                  <div className="flex gap-4 font-mono text-[9px] text-[#867ea3] bg-[#0d0b14] p-2.5 rounded-xl border border-[#221d3f]">
+                    <span>⏱️ Prep: {generatedRecipe.prepTime}</span>
+                    <span>🍳 Cook: {generatedRecipe.cookingTime}</span>
+                    <span>🥣 Portions: {generatedRecipe.servings} Servings</span>
+                  </div>
+
+                  {/* Ingredients Checklist */}
+                  <div>
+                    <span className="font-bebas text-xs text-[#f0c972] tracking-wider block uppercase mb-2 font-bold">Ingredients Checklist</span>
+                    <div className="space-y-1.5">
+                      {generatedRecipe.ingredients.map((ing, idx) => (
+                        <label key={idx} className="flex items-center gap-2.5 font-mono text-[10.5px] text-gray-300 py-1 border-b border-[#221d3c]/30 cursor-pointer select-none">
+                          <input type="checkbox" className="rounded border-[#251e3e] bg-[#161226] text-pink-500 focus:ring-0 active:scale-95 leading-none" />
+                          <span>{ing}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Instructions stack steps */}
+                  <div>
+                    <span className="font-bebas text-xs text-[#f0c972] tracking-wider block uppercase mb-2 font-bold font-bold">Cooking Instructions</span>
+                    <div className="space-y-3">
+                      {generatedRecipe.instructions.map((step, idx) => (
+                        <div key={idx} className="flex gap-3 text-left">
+                          <span className="w-5 h-5 rounded-full bg-[#1b152d] border border-[#f574a3]/20 text-pink-300 flex items-center justify-center font-mono font-bold text-[9px] shrink-0">{idx + 1}</span>
+                          <span className="font-mono text-[10px] text-gray-300 leading-relaxed pt-0.5">{step}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Quick-Log Actions Box */}
+                  <div className="border-t border-[#221d3c] pt-4 mt-1 flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setGeneratedRecipe(null);
+                      }}
+                      className="flex-1 bg-[#18152c] border border-[#251e3e] text-gray-400 hover:text-white font-mono text-[10px] py-3 rounded-xl uppercase font-bold cursor-pointer"
+                    >
+                      ← Reconfigure
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onLogFood(
+                          generatedRecipe.recipeName,
+                          generatedRecipe.calories,
+                          generatedRecipe.protein,
+                          generatedRecipe.carbs,
+                          generatedRecipe.fat,
+                          undefined, // No barcode
+                          1 // Quantity 1
+                        );
+                        alert(`Logged "${generatedRecipe.recipeName}" to today's food inputs catalog successfully!`);
+                        setGeneratedRecipe(null);
+                        setTrackerMode("menu");
+                      }}
+                      className="flex-[1.8] bg-gradient-to-r from-green-500 to-emerald-500 hover:from-green-400 hover:to-emerald-400 text-[#0d0b14] font-mono text-[10px] py-3 rounded-xl uppercase font-bold text-center active:scale-95 transition-all cursor-pointer"
+                    >
+                      ✓ Log Recipe to my Diet
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         )}
 

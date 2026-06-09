@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { UserState, Exercise, Routine } from "../types";
+import { motion } from "motion/react";
 
 interface AIFieldCoachProps {
   userState: UserState;
@@ -8,6 +9,7 @@ interface AIFieldCoachProps {
   onUpdateWaterGoal: (amount: number) => void;
   onUpdateCalorieTarget?: (calorieGoal: number, proteinGoalPct: number, carbGoalPct: number, fatGoalPct: number) => void;
   setActiveTab: (tab: "home" | "fitness" | "health" | "calendar") => void;
+  workoutKeyboardOpen?: boolean;
 }
 
 interface Message {
@@ -54,13 +56,20 @@ export default function AIFieldCoach({
   onAddTodayGoal,
   onUpdateWaterGoal,
   onUpdateCalorieTarget,
-  setActiveTab
+  setActiveTab,
+  workoutKeyboardOpen = false
 }: AIFieldCoachProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (workoutKeyboardOpen && isOpen) {
+      setIsOpen(false);
+    }
+  }, [workoutKeyboardOpen, isOpen]);
 
   useEffect(() => {
     if (isOpen && messages.length === 0) {
@@ -365,20 +374,26 @@ ${supplementAdvice}
   return (
     <>
       {/* FAB Button */}
-      <button
-        id="coach-fab"
-        onClick={() => setIsOpen(!isOpen)}
-        className="fixed bottom-20 left-4 w-14 h-14 rounded-full flex items-center justify-center text-2xl cursor-pointer shadow-lg z-50 transition-all duration-300 hover:scale-110 active:scale-95"
-        style={{
-          background: isOpen
-            ? "linear-gradient(135deg, #9180c4, #5a4a8a)"
-            : "linear-gradient(135deg, #f0c972, #e07b3f)",
-          boxShadow: isOpen ? "0 4px 20px rgba(145, 128, 196, 0.4)" : "0 4px 20px rgba(240, 201, 114, 0.4)"
-        }}
-        title="AI Wellness Coach"
+      <motion.div
+        className="fixed bottom-20 left-4 z-50"
+        animate={{ y: workoutKeyboardOpen ? 120 : 0, opacity: workoutKeyboardOpen ? 0 : 1 }}
+        transition={{ type: "tween", ease: "easeOut", duration: 0.25 }}
       >
-        <span>🤖</span>
-      </button>
+        <button
+          id="coach-fab"
+          onClick={() => setIsOpen(!isOpen)}
+          className="w-14 h-14 rounded-full flex items-center justify-center text-2xl cursor-pointer shadow-lg transition-all duration-300 hover:scale-110 active:scale-95"
+          style={{
+            background: isOpen
+              ? "linear-gradient(135deg, #9180c4, #5a4a8a)"
+              : "linear-gradient(135deg, #f0c972, #e07b3f)",
+            boxShadow: isOpen ? "0 4px 20px rgba(145, 128, 196, 0.4)" : "0 4px 20px rgba(240, 201, 114, 0.4)"
+          }}
+          title="AI Wellness Coach"
+        >
+          <span>🤖</span>
+        </button>
+      </motion.div>
 
       {/* Expandable modal */}
       {isOpen && (

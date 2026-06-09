@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { UserState, Goal, CalendarEvent } from "../types";
+import { UserState, Goal, CalendarEvent, getLocalDateString } from "../types";
 import { motion, AnimatePresence } from "motion/react";
 
 const sortGoals = (goals: Goal[]): Goal[] => {
@@ -123,7 +123,7 @@ export default function HomeTab({
   const size = 180;
 
   // Calorie & macro trackers
-  const todayDateStr = new Date().toDateString();
+  const todayDateStr = getLocalDateString();
   const foodTodayItems = userState.foodLog?.[todayDateStr] || [];
   
   const calGoal = userState.calorieGoal || 2000;
@@ -211,13 +211,13 @@ export default function HomeTab({
   };
 
   const isSuppDone = (suppId: string, slotKey: string) => {
-    const today = new Date().toISOString().slice(0, 10);
+    const today = getLocalDateString();
     return !!(userState.suppChecks[today]?.[`${suppId}_${slotKey}`]);
   };
 
   // Build Daily Schedule items
   const buildTodaySchedule = () => {
-    const todayStr = new Date().toISOString().slice(0, 10);
+    const todayStr = getLocalDateString();
     const items: Array<
       | { type: "event"; ev: CalendarEvent; sortKey: string }
       | { type: "goal"; goal: Goal; sortKey: string }
@@ -321,47 +321,55 @@ export default function HomeTab({
   }, [tickerItems.length, tickerIndex]);
 
   return (
-    <div className="w-full max-w-md mx-auto py-6 px-4 pb-28 flex flex-col gap-5">
-      {/* Date and Greeting */}
-      <div className="text-center">
-        <div className="text-[10px] text-[#6b6485] tracking-widest uppercase font-mono mb-1">
-          {formatDate(now)}
+    <div className="w-full max-w-md md:max-w-4xl lg:max-w-5xl xl:max-w-6xl mx-auto py-6 px-4 pb-28 flex flex-col gap-6 animate-fade-in">
+      {/* Date, Greeting and Stock Ticker Header */}
+      <div className="flex flex-col md:flex-row md:justify-between md:items-center gap-4 bg-[#13111f]/40 md:bg-[#13111f]/60 md:border md:border-[#221d35] rounded-3xl md:p-6 p-4">
+        <div className="text-center md:text-left">
+          <div className="text-[10px] text-[#6b6485] tracking-widest uppercase font-mono mb-1">
+            {formatDate(now)}
+          </div>
+          <div className="text-3xl font-serif text-[#e8e3f8] font-semibold">
+            {getGreeting(now)}
+          </div>
         </div>
-        <div className="text-3xl font-serif text-[#e8e3f8] font-semibold">
-          {getGreeting(now)}
+
+        {/* NASDAQ/ASX Stock Ticker */}
+        <div className="bg-[#0f0d1b] border border-[#231e3d] rounded-xl py-2 px-3 flex items-center overflow-hidden h-9 select-none shadow-[inset_0_1px_3px_rgba(0,0,0,0.6)] w-full md:max-w-xs md:w-72 shrink-0 md:-my-1">
+          {/* Trading index green label */}
+          <div className="flex items-center gap-1.5 text-[9.5px] font-mono font-bold text-emerald-400 border-r border-[#231e3d] pr-3 shrink-0">
+            <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
+            <span>GOALS</span>
+          </div>
+          
+          {/* Rolling smooth vertical marquee panel */}
+          <div className="flex-grow overflow-hidden relative ml-3 h-full flex items-center">
+            <AnimatePresence mode="wait">
+              {tickerItems[tickerIndex] && (
+                <motion.div
+                  key={tickerIndex}
+                  initial={{ y: 15, opacity: 0 }}
+                  animate={{ y: 0, opacity: 1 }}
+                  exit={{ y: -15, opacity: 0 }}
+                  transition={{ duration: 0.35, ease: [0.23, 1, 0.32, 1] }}
+                  className="flex items-center gap-1.5 absolute left-0 right-0"
+                >
+                  <span className="text-[#6b6485] truncate max-w-[180px] text-[10px] uppercase">{tickerItems[tickerIndex].text}</span>
+                  <span className={`font-bold text-[10px] shrink-0 ${tickerItems[tickerIndex].color}`}>{tickerItems[tickerIndex].val}</span>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
         </div>
       </div>
 
-      {/* NASDAQ/ASX Stock Ticker */}
-      <div className="bg-[#0f0d1b] border border-[#231e3d] rounded-xl py-2 px-3 flex items-center overflow-hidden h-9 select-none shadow-[inset_0_1px_3px_rgba(0,0,0,0.6)]">
-        {/* Trading index green label */}
-        <div className="flex items-center gap-1.5 text-[9.5px] font-mono font-bold text-emerald-400 border-r border-[#231e3d] pr-3 shrink-0">
-          <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
-          <span>GOALS</span>
-        </div>
-        
-        {/* Rolling smooth vertical marquee panel */}
-        <div className="flex-grow overflow-hidden relative ml-3 h-full flex items-center">
-          <AnimatePresence mode="wait">
-            {tickerItems[tickerIndex] && (
-              <motion.div
-                key={tickerIndex}
-                initial={{ y: 15, opacity: 0 }}
-                animate={{ y: 0, opacity: 1 }}
-                exit={{ y: -15, opacity: 0 }}
-                transition={{ duration: 0.35, ease: [0.23, 1, 0.32, 1] }}
-                className="flex items-center gap-1.5 absolute left-0 right-0"
-              >
-                <span className="text-[#6b6485] truncate max-w-[180px] text-[10px] uppercase">{tickerItems[tickerIndex].text}</span>
-                <span className={`font-bold text-[10px] shrink-0 ${tickerItems[tickerIndex].color}`}>{tickerItems[tickerIndex].val}</span>
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </div>
-      </div>
-
-      {/* Clock / Calorie Wheel Swipeable Container */}
-      <div className="flex flex-col items-center">
+      {/* Main Grid Wrapper for Desktop columns, stacks on Mobile */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-start w-full">
+        {/* Column 1: Core Performance Metrics & Planning */}
+        <div className="flex flex-col gap-5 w-full">
+          {/* Clock / Calorie Wheel Swipeable Container card wrapper */}
+          <div className="bg-[#13111f]/40 md:bg-[#13111f]/60 md:border md:border-[#221d35] rounded-3xl p-5 shadow-sm flex flex-col items-center">
+            {/* Clock / Calorie Wheel Swipeable Container */}
+            <div className="flex flex-col  items-center w-full">
         <div 
           onTouchStart={(e) => setTouchStartX(e.touches[0].clientX)}
           onTouchEnd={(e) => {
@@ -573,7 +581,7 @@ export default function HomeTab({
 
         {/* Micro Hydration Shortcut Capsule - Conforming to third request */}
         {(() => {
-          const tKey = new Date().toISOString().slice(0, 10);
+          const tKey = getLocalDateString();
           const wConf = userState.waterConfig || { containerType: "glass", capacity: 250, capacityUnit: "ml" };
           const getCapMl = (cap: number, unit: string): number => {
             if (unit === "lt") return cap * 1000;
@@ -616,6 +624,7 @@ export default function HomeTab({
           );
         })()}
       </div>
+      </div> {/* Close Column 1 container wrapper card */}
 
       {/* DETAILED DAILY NUTRITION AND MEALS LIST MODAL OVERLAY (Style of image 2) */}
       <AnimatePresence>
@@ -1215,9 +1224,12 @@ export default function HomeTab({
           )}
         </div>
       </div>
+      </div> {/* Close Column 1 (Goals & Planning) */}
 
-      {/* Merged Daily Schedule View */}
-      <div className="flex justify-between items-center mt-2.5 mb-1">
+      {/* Column 2: Today's Schedule & Supplemental Integrations */}
+      <div className="flex flex-col gap-4 w-full bg-[#13111f]/40 md:bg-[#13111f]/60 md:border md:border-[#221d35] rounded-3xl p-5 md:min-h-[500px]">
+        {/* Merged Daily Schedule View */}
+        <div className="flex justify-between items-center mb-1">
         <span className="text-[10px] text-[#6b6485] font-mono tracking-wider uppercase">
           Today's Schedule
         </span>
@@ -1466,6 +1478,8 @@ export default function HomeTab({
           })
         )}
       </div>
+      </div> {/* Close Column 2 wrapping div */}
+      </div> {/* Close Main Grid wrapper row */}
     </div>
   );
 }

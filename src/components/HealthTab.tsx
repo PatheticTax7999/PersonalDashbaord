@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { UserState, WaterConfig } from "../types";
+import { UserState, WaterConfig, getLocalDateString } from "../types";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, AreaChart, Area } from "recharts";
 import { motion, AnimatePresence } from "motion/react";
 
@@ -79,7 +79,7 @@ export default function HealthTab({
   const [innerSearchError, setInnerSearchError] = useState("");
 
   // Calorie & macro trackers
-  const todayDateStr = new Date().toDateString();
+  const todayDateStr = getLocalDateString();
   const foodTodayItems = userState.foodLog?.[todayDateStr] || [];
   
   const calGoal = userState.calorieGoal || 2000;
@@ -312,7 +312,7 @@ export default function HealthTab({
     }
   };
 
-  const todayKey = new Date().toISOString().slice(0, 10);
+  const todayKey = getLocalDateString();
 
   // Water calculations
   const wConfig: WaterConfig = userState.waterConfig || DEFAULT_WATER_CONFIG;
@@ -472,7 +472,7 @@ export default function HealthTab({
   };
 
   return (
-    <div className="w-full max-w-md mx-auto py-6 px-4 pb-28 flex flex-col gap-5">
+    <div className="w-full max-w-md md:max-w-4xl lg:max-w-5xl xl:max-w-6xl mx-auto py-6 px-4 pb-28 flex flex-col gap-5 animate-fade-in">
       {/* Tab Header */}
       <div>
         <div className="font-bebas text-3xl tracking-wider text-[#e8e3f8] leading-none mb-1">

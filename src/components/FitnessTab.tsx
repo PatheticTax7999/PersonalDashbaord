@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { UserState, ActiveWorkout, Routine, Exercise, CompletedWorkout, RoutineFolder, AIDailyWorkout } from "../types";
+import { UserState, ActiveWorkout, Routine, Exercise, CompletedWorkout, RoutineFolder, AIDailyWorkout, getLocalDateString } from "../types";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 import { motion, AnimatePresence } from "motion/react";
 import {
@@ -47,6 +47,7 @@ interface FitnessTabProps {
   onToggleLb: () => void;
   onUpdateActiveWorkout: (workout: ActiveWorkout | null) => void;
   onUpdateUserState?: (state: UserState) => void;
+  onKeyboardToggle?: (isOpen: boolean) => void;
 }
 
 // 15 prepopulated physical conditioning exercises with categories, realistic Unsplash thumbnails & ranks
@@ -153,7 +154,8 @@ export default function FitnessTab({
   onDeleteRoutine,
   onToggleLb,
   onUpdateActiveWorkout,
-  onUpdateUserState
+  onUpdateUserState,
+  onKeyboardToggle
 }: FitnessTabProps) {
   // General UI state
   const [expandedFolders, setExpandedFolders] = useState<Record<string, boolean>>({
@@ -161,8 +163,52 @@ export default function FitnessTab({
   });
 
   // Custom keyboard & plate calculator state
-  const [activeInput, setActiveInput] = useState<{ exIdx: number; setIdx: number; field: "weight" | "reps" } | null>(null);
+  const [activeInput, setActiveInput] = useState<{ exIdx: number; setIdx: number; field: "weight" | "reps" | "rpe" } | null>(null);
   const [showPlateCalculator, setShowPlateCalculator] = useState(false);
+
+  // Smart Rest Interval timers state
+  const [restTimerTotal, setRestTimerTotal] = useState(90);
+  const [restTimerRemaining, setRestTimerRemaining] = useState(0);
+  const [restTimerActive, setRestTimerActive] = useState(false);
+
+  useEffect(() => {
+    let interval: any = null;
+    if (restTimerActive && restTimerRemaining > 0) {
+      interval = setInterval(() => {
+        setRestTimerRemaining((prev) => {
+          if (prev <= 1) {
+            setRestTimerActive(false);
+            // Trigger beautiful audio oscillation chime!
+            try {
+              const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+              const osc = audioCtx.createOscillator();
+              const gain = audioCtx.createGain();
+              osc.connect(gain);
+              gain.connect(audioCtx.destination);
+              osc.type = "sine";
+              osc.frequency.setValueAtTime(660, audioCtx.currentTime); // chime note
+              gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
+              osc.start();
+              osc.stop(audioCtx.currentTime + 0.35); // 350ms chime
+            } catch (e) {
+              console.log("AudioContext chime not supported or allowed yet:", e);
+            }
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+    }
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [restTimerActive, restTimerRemaining]);
+
+  useEffect(() => {
+    if (onKeyboardToggle) {
+      onKeyboardToggle(!!activeInput && !showPlateCalculator);
+    }
+  }, [activeInput, showPlateCalculator, onKeyboardToggle]);
   const [calculatorBarWeight, setCalculatorBarWeight] = useState<number>(20); // standard bar default in kg
   const [calculatorPlates, setCalculatorPlates] = useState<number[]>([]); // plates in kg (loading on one side of barbell, symmetric)
   const [availablePlates, setAvailablePlates] = useState<number[]>([20, 15, 10, 5, 2.5, 1.25]); // standard Australian plate sizes in kg
@@ -251,7 +297,7 @@ export default function FitnessTab({
 
   // Auto-generate daily workout at launch if missing for today
   useEffect(() => {
-    const todayStr = new Date().toISOString().slice(0, 10);
+    const todayStr = getLocalDateString();
     const existingWorkout = userState.aiDailyWorkout;
 
     if (!existingWorkout || existingWorkout.date !== todayStr) {
@@ -343,7 +389,7 @@ export default function FitnessTab({
     if (aiGenerating) return;
     setAiGenerating(true);
     try {
-      const todayStr = new Date().toISOString().slice(0, 10);
+      const todayStr = getLocalDateString();
       const res = await fetch("/api/fitness/generate-daily-workout", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -399,13 +445,30 @@ export default function FitnessTab({
     updated.sets[exIdx] = [...updated.sets[exIdx]];
     
     const setObj = { ...updated.sets[exIdx][setIdx] } as any;
-    setObj.checked = !setObj.checked;
+    const oldChecked = !!setObj.checked;
+    setObj.checked = !oldChecked;
     
     updated.sets[exIdx][setIdx] = setObj;
     onUpdateActiveWorkout(updated);
+
+    // If marked checked, trigger smart rest timers autonomously!
+    if (!oldChecked) {
+      const rpeVal = parseFloat(setObj.rpe) || 0;
+      let restSecs = 90; // general baseline default rest
+      if (rpeVal >= 9) {
+        restSecs = 180; // 3 mins optimal for ATP/Neural strength recovery
+      } else if (rpeVal >= 8) {
+        restSecs = 120; // 2 mins hypertrophic muscular rest
+      } else if (rpeVal > 0) {
+        restSecs = 60;  // 1 min light recovery rest
+      }
+      setRestTimerTotal(restSecs);
+      setRestTimerRemaining(restSecs);
+      setRestTimerActive(true);
+    }
   };
 
-  const handleUpdateActiveSetField = (exIdx: number, setIdx: number, field: "weight" | "reps", value: string) => {
+  const handleUpdateActiveSetField = (exIdx: number, setIdx: number, field: "weight" | "reps" | "rpe", value: string) => {
     if (!activeWorkout) return;
     const updated = { ...activeWorkout };
     updated.sets = [...updated.sets];
@@ -424,7 +487,7 @@ export default function FitnessTab({
     updated.sets = [...updated.sets];
     updated.sets[exIdx] = [
       ...updated.sets[exIdx],
-      { weight: "", reps: "" }
+      { weight: "", reps: "", rpe: "" }
     ];
     onUpdateActiveWorkout(updated);
   };
@@ -864,7 +927,7 @@ export default function FitnessTab({
     const { routine, sets } = activeWorkout;
 
     return (
-      <div className={`w-full max-w-md mx-auto py-6 px-4 flex flex-col gap-5 text-left transition-all ${activeInput && !showPlateCalculator ? "pb-[450px]" : "pb-28"}`}>
+      <div className={`w-full max-w-md mx-auto py-6 px-4 flex flex-col gap-5 text-left transition-all ${activeInput && !showPlateCalculator ? "pb-72" : "pb-28"}`}>
         {/* Persistent top progress HUD with Timer & Exit control */}
         <div className="flex justify-between items-center bg-[#13111f] border border-[#2a2440] px-4 py-3.5 rounded-2xl gap-3">
           <div className="flex items-center gap-3 min-w-0">
@@ -1028,11 +1091,12 @@ export default function FitnessTab({
                   </div>
 
                   {/* Sets interactive tables */}
-                  <div className="grid grid-cols-[30px_minmax(0,1.2fr)_minmax(0,1fr)_minmax(0,1fr)_40px] gap-2 mb-2 text-center text-[9px] font-mono text-gray-500 select-none">
+                  <div className="grid grid-cols-[25px_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,0.85fr)_35px] gap-2 mb-2 text-center text-[9px] font-mono text-gray-500 select-none">
                     <div>SET</div>
                     <div>PREV</div>
                     <div>{userState.useLb ? "LBS" : "KGS"}</div>
                     <div>REPS</div>
+                    <div>RPE</div>
                     <div />
                   </div>
 
@@ -1043,7 +1107,7 @@ export default function FitnessTab({
                       return (
                         <div
                           key={setIdx}
-                          className={`grid grid-cols-[30px_minmax(0,1.2fr)_minmax(0,1fr)_minmax(0,1fr)_40px] gap-2 items-center transition-opacity duration-150 ${
+                          className={`grid grid-cols-[25px_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,0.85fr)_35px] gap-2 items-center transition-opacity duration-150 ${
                             isChecked ? "opacity-50" : "opacity-100"
                           }`}
                         >
@@ -1093,6 +1157,24 @@ export default function FitnessTab({
                             } disabled:opacity-40`}
                           />
 
+                          {/* RPE Input */}
+                          <input
+                            type="text"
+                            inputMode="none"
+                            placeholder="―"
+                            disabled={isChecked}
+                            value={s.rpe || ""}
+                            onFocus={() => {
+                              setActiveInput({ exIdx, setIdx, field: "rpe" });
+                            }}
+                            onChange={(e) => handleUpdateActiveSetField(exIdx, setIdx, "rpe", e.target.value)}
+                            className={`w-full bg-[#1e1a30] py-2 text-center font-mono text-xs text-white focus:outline-none rounded-xl transition-all ${
+                              activeInput?.exIdx === exIdx && activeInput?.setIdx === setIdx && activeInput?.field === "rpe"
+                                ? "border-2 border-[#f0c972]"
+                                : "border border-[#221d35] hover:border-[#f0c972]/30"
+                            } disabled:opacity-40`}
+                          />
+
                           {/* Checklist checkbox action */}
                           <button
                             type="button"
@@ -1132,35 +1214,98 @@ export default function FitnessTab({
             })}
 
             {/* Post-list fast actions toolbar to expand exercises dynamically */}
-            <div className="grid grid-cols-2 gap-3.5 select-none pt-2">
-              <button
-                onClick={() => setShowAddRoutineModal(true)}
-                className="bg-[#13111f] hover:bg-[#1a172c] text-[#4285F4] border border-[#2a2440] hover:border-[#4285F4] font-mono text-[10.5px] font-bold py-3 rounded-xl flex items-center justify-center gap-1.5 cursor-pointer active:scale-95 transition-all"
-              >
-                + Routine
-              </button>
+            {!activeInput && (
+              <div className="grid grid-cols-2 gap-3.5 select-none pt-2 animate-out fade-out duration-150">
+                <button
+                  onClick={() => setShowAddRoutineModal(true)}
+                  className="bg-[#13111f] hover:bg-[#1a172c] text-[#4285F4] border border-[#2a2440] hover:border-[#4285F4] font-mono text-[10.5px] font-bold py-3 rounded-xl flex items-center justify-center gap-1.5 cursor-pointer active:scale-95 transition-all"
+                >
+                  + Routine
+                </button>
 
-              <button
-                onClick={() => {
-                  setShowAddExChooser(true);
-                  setExChooserSearch("");
-                }}
-                className="bg-[#13111f] hover:bg-[#1a172c] text-[#4285F4] border border-[#2a2440] hover:border-[#4285F4] font-mono text-[10.5px] font-bold py-3 rounded-xl flex items-center justify-center gap-1.5 cursor-pointer active:scale-95 transition-all"
-              >
-                + Exercise
-              </button>
-            </div>
+                <button
+                  onClick={() => {
+                    setShowAddExChooser(true);
+                    setExChooserSearch("");
+                  }}
+                  className="bg-[#13111f] hover:bg-[#1a172c] text-[#4285F4] border border-[#2a2440] hover:border-[#4285F4] font-mono text-[10.5px] font-bold py-3 rounded-xl flex items-center justify-center gap-1.5 cursor-pointer active:scale-95 transition-all"
+                >
+                  + Exercise
+                </button>
+              </div>
+            )}
           </div>
         )}
 
         {/* Global finish session buttons action */}
-        {routine.exercises.length > 0 && (
+        {routine.exercises.length > 0 && !activeInput && (
           <button
             onClick={handleCompleteActiveWorkout}
-            className="w-full bg-gradient-to-r from-[#f0c972] to-[#e07b3f] text-[#0d0b14] font-bebas text-lg tracking-wider py-4 rounded-2xl active:scale-95 transition-all shadow-lg text-center cursor-pointer mt-4"
+            className="w-full bg-gradient-to-r from-[#f0c972] to-[#e07b3f] text-[#0d0b14] font-bebas text-lg tracking-wider py-4 rounded-2xl active:scale-95 transition-all shadow-lg text-center cursor-pointer mt-4 animate-out fade-out duration-150"
           >
             FINISH TRAINING SESSION  ✓
           </button>
+        )}
+
+        {/* Floating Smart Rest Countdown HUD CARD */}
+        {restTimerActive && restTimerRemaining > 0 && (
+          <div className="fixed bottom-24 left-4 right-4 z-50 max-w-sm mx-auto bg-[#13111f]/95 backdrop-blur-md border border-[#e07b3f]/40 p-4 rounded-xl shadow-[0_10px_30px_rgba(0,0,0,0.5)] transition-all flex flex-col gap-2">
+            <div className="flex justify-between items-center">
+              <div className="flex items-center gap-2">
+                <span className="text-lg animate-pulse select-none">⏱️</span>
+                <div>
+                  <span className="font-bebas text-xs text-white block uppercase tracking-wider font-bold">Smart Rest Recovery</span>
+                  <span className="text-[8.5px] text-[#e07b3f] uppercase font-mono tracking-wide block">
+                    {restTimerTotal === 180 ? "Neuro Strength Recovery (High RPE)" : restTimerTotal === 120 ? "Muscular Hypertrophy Rest" : restTimerTotal === 60 ? "Light Active Recovery Rest" : "Baseline General Recovery Rest"}
+                  </span>
+                </div>
+              </div>
+              <button
+                onClick={() => setRestTimerActive(false)}
+                className="text-gray-400 hover:text-white text-xs font-bold font-mono px-2 py-1 hover:bg-[#1e1a30] rounded-lg cursor-pointer"
+              >
+                Skip ✖
+              </button>
+            </div>
+
+            <div className="flex items-center justify-between mt-1">
+              <span className="font-mono text-3xl font-extrabold text-[#f0c972]">
+                {Math.floor(restTimerRemaining / 60)}:{(restTimerRemaining % 60).toString().padStart(2, "0")}
+              </span>
+
+              <div className="flex gap-1.5 font-mono text-[9px]">
+                <button
+                  type="button"
+                  onClick={() => setRestTimerRemaining(prev => Math.max(0, prev - 10))}
+                  className="px-2 py-1 bg-[#1c182d] hover:bg-[#25203b] border border-[#2a2440] rounded-lg text-white font-bold cursor-pointer"
+                >
+                  -10s
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setRestTimerRemaining(prev => prev + 30)}
+                  className="px-2 py-1 bg-[#1c182d] hover:bg-[#25203b] border border-[#2a2440] rounded-lg text-white font-bold cursor-pointer"
+                >
+                  +30s
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setRestTimerActive(prev => !prev)}
+                  className="px-3 py-1 bg-gradient-to-r from-[#f0c972] to-[#e07b3f] text-[#0d0b14] rounded-lg font-mono font-bold cursor-pointer uppercase text-[9px]"
+                >
+                  Pause
+                </button>
+              </div>
+            </div>
+
+            {/* Quick progress bar */}
+            <div className="w-full bg-[#1c182d] h-1.5 rounded-full overflow-hidden mt-1 bg-gray-800">
+              <div 
+                className="bg-gradient-to-r from-[#f0c972] to-[#e07b3f] h-full transition-all duration-1000"
+                style={{ width: `${(restTimerRemaining / restTimerTotal) * 100}%` }}
+              />
+            </div>
+          </div>
         )}
 
         {/* Elegant Custom Keyboard Panel */}
@@ -1378,26 +1523,26 @@ export default function FitnessTab({
                     )}
                   </div>
 
-                  {/* Quick Clear controls */}
-                  <div className="flex gap-2.5 w-full border-t border-[#221d35] pt-4 mt-4 z-10 shrink-0 select-none">
-                    <button
-                      onClick={() => setCalculatorPlates([])}
-                      className="flex-1 bg-red-400/10 hover:bg-red-400/20 border border-red-400/20 text-red-400 rounded-xl py-2 font-mono text-[10px] uppercase font-bold tracking-wider cursor-pointer text-center active:scale-95 transition-all"
-                    >
-                      Clear All Plates
-                    </button>
-                    <button
-                      disabled={calculatorPlates.length === 0}
-                      onClick={() => setCalculatorPlates(prev => prev.slice(0, -1))}
-                      className="flex-1 bg-[#1c182d] hover:bg-[#221d35] border border-[#2a2440] text-gray-400 hover:text-white rounded-xl py-2 font-mono text-[10px] uppercase font-bold tracking-wider cursor-pointer text-center active:scale-95 transition-all disabled:opacity-40"
-                    >
-                      Undo last plate
-                    </button>
-                  </div>
-                  
                   <span className="font-mono text-[8px] text-gray-600 uppercase tracking-wide mt-1 block">
                     💡 Click any plate on bar sleeve to specific-delete it!
                   </span>
+                </div>
+
+                {/* Quick Clear controls moved outside & shifted down to prevent overlapping/clipping */}
+                <div className="flex gap-3 w-full select-none shrink-0 mb-1 mt-0.5">
+                  <button
+                    onClick={() => setCalculatorPlates([])}
+                    className="flex-1 bg-red-400/10 hover:bg-red-400/20 border-2 border-red-500/20 text-red-300 rounded-xl py-3.5 font-mono text-[10px] uppercase font-bold tracking-wider cursor-pointer text-center active:scale-95 transition-all shadow-md"
+                  >
+                    Clear All Plates
+                  </button>
+                  <button
+                    disabled={calculatorPlates.length === 0}
+                    onClick={() => setCalculatorPlates(prev => prev.slice(0, -1))}
+                    className="flex-1 bg-[#1c182d] hover:bg-[#221d35] border border-[#2a2440] text-gray-400 hover:text-white rounded-xl py-3.5 font-mono text-[10px] uppercase font-bold tracking-wider cursor-pointer text-center active:scale-95 transition-all disabled:opacity-40 shadow-md"
+                  >
+                    Undo last plate
+                  </button>
                 </div>
 
                 {/* 1. Bar Select Category with Scrollbar support */}
@@ -1607,9 +1752,33 @@ export default function FitnessTab({
 
             {/* Exercises Dynamic List */}
             <div className="flex-1 overflow-y-auto space-y-2.5 pr-1 scrollbar-none pb-12">
+              {exChooserSearch.trim() !== "" && (
+                <div
+                  onClick={() => {
+                    handleAddSelectedExerciseToWorkout({ name: exChooserSearch.trim() });
+                  }}
+                  className="bg-[#1e1735]/80 hover:bg-[#282147] border-2 border-dashed border-[#f0c972]/60 p-4 rounded-xl flex gap-3.5 items-center justify-between cursor-pointer transition-all mb-1.5 select-none"
+                >
+                  <div className="flex items-center gap-3 min-w-0">
+                    <span className="text-xl shrink-0 select-none">🏋️‍♀️</span>
+                    <div className="text-left min-w-0">
+                      <span className="font-mono text-[8px] text-pink-300 block uppercase tracking-wider font-bold">CUSTOM MOVEMENT</span>
+                      <span className="font-mono text-xs font-bold text-[#f0c972] block truncate leading-snug mt-0.5">
+                        Add & Log "{exChooserSearch.trim()}"
+                      </span>
+                    </div>
+                  </div>
+                  
+                  <div className="bg-[#f0c972]/15 border border-[#f0c972]/30 text-[#f0c972] px-3 py-1.5 rounded-lg font-mono text-[9px] font-bold uppercase tracking-wider shrink-0 active:scale-95 transition-transform">
+                    Create +
+                  </div>
+                </div>
+              )}
+
               {sortedExercisesForChooser.length === 0 ? (
                 <div className="py-16 text-center text-xs font-mono text-gray-500">
                   No matching exercises found in this category.
+                  <p className="text-[10px] text-gray-600 mt-2">Type above to register a custom lift name!</p>
                 </div>
               ) : (
                 sortedExercisesForChooser.map((ex) => {
@@ -1710,7 +1879,7 @@ export default function FitnessTab({
 
   // SECTION 3: DEFAULT LIFT LISTING SCREEN
   return (
-    <div className="w-full max-w-md mx-auto py-5 px-4 pb-28 flex flex-col gap-5 text-left">
+    <div className="w-full max-w-md md:max-w-4xl lg:max-w-5xl xl:max-w-6xl mx-auto py-5 px-4 pb-28 flex flex-col gap-5 text-left animate-fade-in">
       {/* Elegantly styled header replacement for the global tab */}
       <div className="flex justify-between items-center pb-2.5 border-b border-[#221d35] mb-2 z-10 select-none">
         <div>
@@ -1724,6 +1893,11 @@ export default function FitnessTab({
           ⚖️ {userState.useLb ? "LB" : "KG"}
         </div>
       </div>
+
+      {/* Core split widescreen panel grid */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-start w-full">
+        {/* Column 1: Today's AI Suggested program and direct start shortcuts */}
+        <div className="flex flex-col gap-5 w-full">
 
       {/* 2. TODAY'S WORKOUT SECTION (Daily auto-generated AI workout, img-1 style) */}
       <div className="flex flex-col gap-2">
@@ -1825,8 +1999,12 @@ export default function FitnessTab({
         </div>
       </div>
 
-      {/* 4. ROUTINES ACCORDION FOLDERS (img-1, img-2 style) */}
-      <div className="flex flex-col gap-3">
+        </div> {/* Close Column 1 */}
+
+        {/* Column 2: Custom folder splits & predefined categories packages */}
+        <div className="flex flex-col gap-5 w-full bg-[#13111f]/40 md:bg-[#13111f]/60 md:border md:border-[#221d35] rounded-3xl p-5 md:min-h-[500px]">
+          {/* 4. ROUTINES ACCORDION FOLDERS (img-1, img-2 style) */}
+          <div className="flex flex-col gap-3">
         {/* Accordion List Header */}
         <div className="flex justify-between items-center">
           <span className="font-bebas text-2xl tracking-wide text-white">Routines</span>
@@ -1970,6 +2148,8 @@ export default function FitnessTab({
           })}
         </div>
       </div>
+      </div> {/* Close Column 2 card wrapper */}
+      </div> {/* Close Core split widescreen panel grid */}
 
       {/* 5. PROGRESSIVE OVERLOAD GRAPH SECTIONS */}
       {loggedExercises.length > 0 && (
@@ -2187,6 +2367,26 @@ export default function FitnessTab({
                 </div>
 
                 <div className="grid grid-cols-1 gap-2 max-h-[180px] overflow-y-auto mt-2 select-none">
+                  {searchExerciseQuery.trim() !== "" && (
+                    <div
+                      onClick={() => handleAddExerciseToRoutine({ name: searchExerciseQuery.trim() })}
+                      className="bg-[#1e1735]/80 hover:bg-[#282147] border-2 border-dashed border-[#f0c972]/60 p-3 rounded-xl flex items-center justify-between cursor-pointer transition-all mb-1 select-none"
+                    >
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <span className="text-base shrink-0 select-none">➕</span>
+                        <div className="text-left min-w-0">
+                          <span className="font-mono text-[8px] text-pink-300 block uppercase tracking-wider font-bold">CUSTOM ROUTINE LIFT</span>
+                          <span className="font-mono text-xs font-bold text-[#f0c972] block truncate leading-tight mt-0.5">
+                            Create "{searchExerciseQuery.trim()}"
+                          </span>
+                        </div>
+                      </div>
+                      
+                      <div className="w-6 h-6 rounded-full bg-[#f0c972]/15 border border-[#f0c972]/30 text-[#f0c972] flex items-center justify-center font-bold text-xs shrink-0 active:scale-95 transition-transform">
+                        +
+                      </div>
+                    </div>
+                  )}
                   {filteredExercises.map((dbEx, dbExIdx) => (
                     <div
                       key={dbExIdx}

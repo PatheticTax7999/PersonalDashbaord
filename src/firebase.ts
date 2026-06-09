@@ -1,20 +1,23 @@
 import { initializeApp } from 'firebase/app';
-import { getAuth, GoogleAuthProvider } from 'firebase/auth';
-import { getFirestore } from 'firebase/firestore';
-
-// Client-side config is public by Firestore design
-const firebaseConfig = {
-  apiKey: "AIzaSyD7N3IMhCShtARUDJ3ClP8TniRbDu71TCk",
-  authDomain: "life-dashboard-3d309.firebaseapp.com",
-  projectId: "life-dashboard-3d309",
-  appId: "1:920483424217:web:99867c36c968814dbadbc8"
-};
+import { getAuth, GoogleAuthProvider, GithubAuthProvider } from 'firebase/auth';
+import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager } from 'firebase/firestore';
+import firebaseConfig from '../firebase-applet-config.json';
 
 const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
-export const db = getFirestore(app);
+
+// Enable persistent local cache with multi-tab support for seamless mobile-to-desktop synchronization
+export const db = initializeFirestore(app, {
+  localCache: persistentLocalCache({
+    tabManager: persistentMultipleTabManager()
+  })
+});
+
 export const provider = new GoogleAuthProvider();
 provider.addScope("https://www.googleapis.com/auth/calendar.readonly");
+
+export const githubProvider = new GithubAuthProvider();
+
 
 export enum OperationType {
   CREATE = 'create',

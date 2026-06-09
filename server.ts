@@ -3,6 +3,7 @@ import path from "path";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
 import dotenv from "dotenv";
+import fs from "fs";
 
 dotenv.config();
 
@@ -98,10 +99,28 @@ async function startServer() {
         const rawRole = (m.role || '').toLowerCase();
         // user stays user, ai/model/assistant maps to model
         const role = rawRole === 'user' ? 'user' : 'model';
+        
+        const parts: any[] = [];
+        
+        // Extract text
         const text = m.content || m.text || m.message || "";
+        if (text) {
+          parts.push({ text });
+        }
+        
+        // Extract inlineData if provided (multimodal image analysis)
+        if (m.inlineData && m.inlineData.data && m.inlineData.mimeType) {
+          parts.push({
+            inlineData: {
+              mimeType: m.inlineData.mimeType,
+              data: m.inlineData.data
+            }
+          });
+        }
+        
         return {
           role,
-          parts: [{ text }]
+          parts
         };
       });
 
@@ -955,6 +974,118 @@ Format your response as a bulleted list of 3 direct tips. Keep the tone strong, 
     }
   });
 
+  // API router for goals-based AI recipe generator
+  app.post("/api/generate-recipe", async (req, res) => {
+    try {
+      const { 
+        calorieGoal, 
+        proteinGoalPct, 
+        carbGoalPct, 
+        fatGoalPct, 
+        remainingCalories, 
+        remainingProtein, 
+        remainingCarbs, 
+        remainingFat, 
+        mealType, 
+        focus, 
+        exclusions, 
+        prepTime 
+      } = req.body;
+
+      console.log(`[Recipe API] Generating recipe for meal: ${mealType}, remaining cals: ${remainingCalories}, focus: ${focus}`);
+
+      let prompt = `Act as an elite sports dietician. Formulate a personalized single-portion recipe tailored precisely to the user's daily fitness goals and current nutritional progress.
+
+User Metrics and Nutrition Context:
+- Target Daily Calories Goal: ${calorieGoal || 2000} kcal
+- Remaining Calories Budget: ${remainingCalories !== undefined ? remainingCalories : 600} kcal
+- Remaining Protein Budget: ${remainingProtein !== undefined ? remainingProtein : 40} g
+- Remaining Carbs Budget: ${remainingCarbs !== undefined ? remainingCarbs : 50} g
+- Remaining Fat Budget: ${remainingFat !== undefined ? remainingFat : 20} g
+
+Preferences Selected:
+- Intended Meal Type: ${mealType || "Dinner"}
+- Nutritional Focus/Style: ${focus || "High Protein / Muscle Gain"}
+- Exclude ingredients: ${exclusions || "None"}
+- Maximum Prep/Cook Time: ${prepTime || "Under 30 mins"}
+
+Generate a recipe that aims to fit within or complement these remaining macro budgets (especially prioritizing the protein and staying within or close to remaining calories). Keep the recipe highly authentic, healthy, appetizing, and practical to make with standard ingredients.
+
+Return ONLY a valid, single JSON object without markdown formatting or code blocks. Do not wrap in \`\`\`json. Each property must strictly follow this structure:
+{
+  "recipeName": "Clean Sesame Beef and Broccoli",
+  "prepTime": "10 mins",
+  "cookingTime": "12 mins",
+  "servings": 1,
+  "calories": 410,
+  "protein": 38,
+  "carbs": 15,
+  "fat": 12,
+  "description": "A rapid, low-calorie, high-protein stir-fry packed with clean amino acids and fresh micronutrients to fuel your muscle recovery.",
+  "ingredients": [
+    "150g Lean beef rump, thinly sliced",
+    "1.5 cups Broccoli florets",
+    "1 tbsp Low-sodium soy sauce",
+    "1 tsp Sesame oil",
+    "1 clove Garlic, minced"
+  ],
+  "instructions": [
+    "Heat sesame oil in a non-stick skillet or wok over high heat.",
+    "Sauté minced garlic for 30 seconds, then add sliced lean beef and sear for 3 minutes.",
+    "Add broccoli florets and soy sauce, cover and cook for 4-5 minutes until broccoli is crisp-tender.",
+    "Serve hot as a perfect recovery dish."
+  ]
+}`;
+
+      const ai = getGoogleGenAI();
+      const reply = await generateCoachResponse(
+        ai,
+        [{ role: "user", parts: [{ text: prompt }] }],
+        "You are an expert sports performance culinary chef and digital nutrition counselor. You structure perfect evidence-based recipe designs in raw JSON format."
+      );
+
+      let cleaned = (reply || "").trim();
+      if (cleaned.startsWith("```json")) {
+        cleaned = cleaned.substring(7);
+      } else if (cleaned.startsWith("```")) {
+        cleaned = cleaned.substring(3);
+      }
+      if (cleaned.endsWith("```")) {
+        cleaned = cleaned.substring(0, cleaned.length - 3);
+      }
+      cleaned = cleaned.trim();
+
+      const parsed = JSON.parse(cleaned);
+      res.json(parsed);
+    } catch (err: any) {
+      console.error("Recipe Generation API Error:", err);
+      // Serve a highly solid, nutritious fallback recipe so the call never crashes
+      res.json({
+        recipeName: "AI Recovery Chicken Rice Bowl",
+        prepTime: "10 mins",
+        cookingTime: "15 mins",
+        servings: 1,
+        calories: 450,
+        protein: 42,
+        carbs: 45,
+        fat: 10,
+        description: "A fast, balanced performance dish with robust lean proteins, clean fast-acting carbs, and essential micronutrients.",
+        ingredients: [
+          "150g Grilled chicken breast, diced",
+          "1 cup Steamed jasmine rice (or brown rice)",
+          "1/2 cup Steamed broccoli",
+          "1 tbsp low-sodium Teriyaki sauce"
+        ],
+        instructions: [
+          "Heat a non-stick pan and pan-sear the diced chicken breast with a light cooking spray until fully cooked.",
+          "Assemble the bowl starting with the steamed rice as the carb foundation.",
+          "Arrange the cooked chicken breast and steamed broccoli alongside.",
+          "Drizzle the teriyaki sauce evenly over the bowl and serve warm."
+        ]
+      });
+    }
+  });
+
   // API router for Food Keyword Search supporting OpenFoodFacts and the Australian Food Composition Database (AFCD)
   app.get("/api/food/search", async (req, res) => {
     try {
@@ -1044,12 +1175,43 @@ Format your response as a bulleted list of 3 direct tips. Keep the tone strong, 
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
       server: { middlewareMode: true },
-      appType: "spa",
+      appType: "custom",
     });
+
+    // Handle index.html (Bento Hub)
+    app.get("/", async (req, res, next) => {
+      try {
+        const filePath = path.resolve(process.cwd(), "index.html");
+        let html = fs.readFileSync(filePath, "utf-8");
+        html = await vite.transformIndexHtml(req.originalUrl, html);
+        res.status(200).set({ "Content-Type": "text/html" }).send(html);
+      } catch (err) {
+        next(err);
+      }
+    });
+
+    // Handle main.html (Goals Dashboard React App)
+    app.get("/main.html", async (req, res, next) => {
+      try {
+        const filePath = path.resolve(process.cwd(), "main.html");
+        let html = fs.readFileSync(filePath, "utf-8");
+        html = await vite.transformIndexHtml(req.originalUrl, html);
+        res.status(200).set({ "Content-Type": "text/html" }).send(html);
+      } catch (err) {
+        next(err);
+      }
+    });
+
     app.use(vite.middlewares);
   } else {
     const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
+    
+    // Explicitly handle main.html or index.html requests
+    app.get('/main.html', (req, res) => {
+      res.sendFile(path.join(distPath, 'main.html'));
+    });
+    
     app.get('*', (req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
     });

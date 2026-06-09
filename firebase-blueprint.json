@@ -1,0 +1,46 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile with daily goals, routines, supplement status, water tracker, food tracker, caffeine logs, and completed workouts.",
+      "type": "object",
+      "properties": {
+        "todayGoals": { "type": "array", "description": "Checklist of goals for today" },
+        "tomorrowGoals": { "type": "array", "description": "Checklist of goals for tomorrow" },
+        "lastDate": { "type": "string", "description": "Last date the app was loaded" },
+        "routines": { "type": "array", "description": "User exercise routines" },
+        "exerciseHistory": { "type": "object", "description": "Exercise name to weight/reps history mapping" },
+        "supplements": { "type": "array", "description": "User's supplements" },
+        "suppChecks": { "type": "object", "description": "Record of daily checked supplements" },
+        "waterGoal": { "type": "number", "description": "Daily water target in ml" },
+        "waterUnit": { "type": "string", "description": "Preferred liquid tracking unit" },
+        "waterLog": { "type": "object", "description": "Map representing water logs per date" },
+        "weightLog": { "type": "array", "description": "Weight entries with date and values" },
+        "useLb": { "type": "boolean", "description": "Whether to use pounds for weight units" },
+        "notificationsEnabled": { "type": "boolean", "description": "Notification settings toggle" },
+        "completedWorkouts": { "type": "array", "description": "Logged finished workouts" },
+        "waterConfig": { "type": "object", "description": "Advanced physical properties and hydration preferences" },
+        "taskStreak": { "type": "number", "description": "Consecutive days with fully completed goals" },
+        "lastStreakCompletedDate": { "type": "string", "description": "Last date streak was extended" },
+        "calorieGoal": { "type": "number", "description": "Daily calorie intake target" },
+        "proteinGoalPct": { "type": "number", "description": "Macro split percentages (protein)" },
+        "carbGoalPct": { "type": "number", "description": "Macro split percentages (carbohydrates)" },
+        "fatGoalPct": { "type": "number", "description": "Macro split percentages (fat)" },
+        "foodLog": { "type": "object", "description": "Food entries logged per date" },
+        "caffeineLogs": { "type": "array", "description": "Historical logs of caffeine drinks" },
+        "customCaffeineDrinks": { "type": "array", "description": "User personalized caffeine beverages" },
+        "routineFolders": { "type": "array", "description": "User custom training folders" },
+        "aiDailyWorkout": { "type": "object", "description": "AI recommended training session for the day" },
+        "gcalEvents": { "type": "array", "description": "Google Calendar sync caches" },
+        "progressPhotos": { "type": "array", "description": "Progress photos list" },
+        "coachChatHistory": { "type": "array", "description": "AI Coach Chatbot conversation logs" }
+      }
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User data collection for wellness, fitness and habit logging."
+    }
+  }
+}

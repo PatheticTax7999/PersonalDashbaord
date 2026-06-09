@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { UserState, CalendarEvent, Goal } from "../types";
+import { UserState, CalendarEvent, Goal, getLocalDateString } from "../types";
 
 const TIME_SLOTS = [
   { key: "morning", label: "Morning", icon: "🌅", start: 6, end: 12 },
@@ -36,17 +36,17 @@ export default function CalendarTab({
   const [calView, setCalView] = useState<"week" | "month">("week");
   const [calOffset, setCalOffset] = useState(0);
   const [selectedDayKey, setSelectedDayKey] = useState<string | null>(
-    new Date().toISOString().slice(0, 10)
+    getLocalDateString()
   );
 
   const [calShowGoals, setCalShowGoals] = useState(true);
   const [calShowSupps, setCalShowSupps] = useState(true);
   const [calShowEvents, setCalShowEvents] = useState(true);
 
-  const todayStr = new Date().toISOString().slice(0, 10);
+  const todayStr = getLocalDateString();
 
   // Helper date conversions
-  const dateKey = (d: Date) => d.toISOString().slice(0, 10);
+  const dateKey = (d: Date) => getLocalDateString(d);
 
   const getWeekDays = (offset: number) => {
     const now = new Date();
@@ -118,7 +118,7 @@ export default function CalendarTab({
     const goalsList = calShowGoals && isToday ? userState.todayGoals : [];
     
     // Filter supplements slots
-    const suppSlots = calShowSupps && isToday ? TIME_SLOTS.filter(slot =>
+    const suppSlots = calShowSupps ? TIME_SLOTS.filter(slot =>
       userState.supplements.some(s => s.times.includes(slot.key))
     ) : [];
 
@@ -309,7 +309,7 @@ export default function CalendarTab({
   };
 
   return (
-    <div className="w-full max-w-md mx-auto py-6 px-4 pb-28 flex flex-col gap-5">
+    <div className="w-full max-w-md md:max-w-4xl lg:max-w-5xl xl:max-w-6xl mx-auto py-6 px-4 pb-28 flex flex-col gap-5 animate-fade-in">
       {/* Tab bar header */}
       <div className="flex justify-between items-center">
         <div>
@@ -463,7 +463,11 @@ export default function CalendarTab({
 
           // Indicator computations
           const hasGoals = calShowGoals && isToday && userState.todayGoals.length > 0;
-          const hasSupps = calShowSupps && isToday && userState.supplements.length > 0;
+          const hasSupps = calShowSupps && (
+            isToday 
+              ? userState.supplements.length > 0 
+              : Object.keys(userState.suppChecks[key] || {}).some(k => userState.suppChecks[key][k])
+          );
           const dayWorkouts = (userState.completedWorkouts || []).filter(w => w.date === key);
           const hasWorkouts = dayWorkouts.length > 0;
           const hasEvents = calShowEvents && gcalEvents.some(ev => {

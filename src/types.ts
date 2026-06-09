@@ -35,6 +35,7 @@ export interface AIDailyWorkout {
 export interface SetEntry {
   weight: string;
   reps: string;
+  rpe?: string; // Rate of Perceived Exertion (1 to 10)
 }
 
 export interface ActiveWorkout {
@@ -115,6 +116,23 @@ export interface UserState {
   // AI workout and routing customizable folders extension
   routineFolders?: RoutineFolder[];
   aiDailyWorkout?: AIDailyWorkout;
+  gcalEvents?: CalendarEvent[];
+  progressPhotos?: ProgressPhotoEntry[];
+  
+  // Caffeine tracker additions
+  caffeineLogs?: CaffeineLog[];
+  customCaffeineDrinks?: CustomCaffeineDrink[];
+  
+  // AI coach chat history
+  coachChatHistory?: CoachMessage[];
+}
+
+export interface ProgressPhotoEntry {
+  id: string;
+  date: string; // YYYY-MM-DD
+  photoUrl: string; // Base64 data URL
+  analysis?: string; // AI analysis text
+  title?: string; // Optional user title e.g. "Front pose", "After Lunch Macros analysis"
 }
 
 export interface FoodLogEntry {
@@ -127,6 +145,23 @@ export interface FoodLogEntry {
   quantity: number;
   barcode?: string;
   loggedAt: string; // "HH:MM"
+}
+
+export interface CaffeineLog {
+  id: string;
+  name: string;
+  mg: number;
+  emoji: string;
+  time: string; // "HH:MM" e.g., "08:30"
+  timestamp: string;
+}
+
+export interface CustomCaffeineDrink {
+  id: string;
+  name: string;
+  mg: number;
+  emoji: string;
+  cat: string;
 }
 
 export interface CalendarEvent {
@@ -144,7 +179,13 @@ export interface CalendarEvent {
 }
 
 export interface CoachMessage {
-  role: 'user' | 'ai';
+  role: 'user' | 'model' | 'ai';
   text: string;
   loading?: boolean;
+}
+
+export function getLocalDateString(dateObj: Date = new Date()): string {
+  const offset = dateObj.getTimezoneOffset();
+  const localDate = new Date(dateObj.getTime() - (offset * 60 * 1000));
+  return localDate.toISOString().slice(0, 10);
 }
